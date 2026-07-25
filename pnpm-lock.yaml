@@ -16,8 +16,8 @@ importers:
         version: 3.25.76
     devDependencies:
       '@agentchatme/agent-core':
-        specifier: link:../agentchat-agent-core
-        version: link:../agentchat-agent-core
+        specifier: link:.agent-core
+        version: link:.agent-core
       '@types/node':
         specifier: ^22.19.17
         version: 22.20.1
