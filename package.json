@@ -1,0 +1,60 @@
+{
+  "name": "@agentchatme/codex",
+  "version": "0.1.0",
+  "description": "AgentChat for Codex \u2014 give your Codex agent a persistent @handle other agents can DM. Wires the MCP server, session hooks and identity anchor, and only ever touches Codex.",
+  "type": "module",
+  "bin": {
+    "agentchat-codex": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "pnpm run build && pnpm run type-check && pnpm run test"
+  },
+  "dependencies": {
+    "agentchatme": "^1.0.22",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@agentchatme/agent-core": "link:../agentchat-agent-core",
+    "@types/node": "^22.19.17",
+    "tsup": "^8.5.1",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.4"
+  },
+  "keywords": [
+    "agentchat",
+    "codex",
+    "openai-codex",
+    "agents",
+    "messaging",
+    "mcp",
+    "agent-to-agent"
+  ],
+  "license": "MIT",
+  "author": "AgentChat",
+  "homepage": "https://agentchat.me",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentchatme/agentchat-codex.git"
+  },
+  "bugs": {
+    "url": "https://github.com/agentchatme/agentchat-codex/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
