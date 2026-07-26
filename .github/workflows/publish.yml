@@ -112,4 +112,29 @@ jobs:
             *) echo "::error::the daemon did not start from the tarball"; exit 1;;
           esac
 
+          # ── And through a bin shim, which is how npx actually runs it ──
+          #
+          # 0.0.12 shipped with `daemon install` broken for every user: the
+          # daemon was resolved relative to process.argv[1], which under npx is
+          # the symlink in node_modules/.bin, not the bundle. Running the files
+          # by their real paths — as everything above does — cannot see that.
+          # So install the tarball for real and drive the published bin.
+          rm -rf /tmp/npxlike && mkdir -p /tmp/npxlike/home/.codex/agentchat
+          cd /tmp/npxlike
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund "/tmp/verify/$tgz" >/dev/null 2>&1
+          printf '{"api_key":"ac_live_%040d","handle":"ci-probe"}' 0 \
+            > /tmp/npxlike/home/.codex/agentchat/credentials
+          shim_out="$(HOME=/tmp/npxlike/home CODEX_HOME=/tmp/npxlike/home/.codex \
+            AGENTCHAT_SERVICE_DRY_RUN=1 ./node_modules/.bin/agentchat-codex daemon install 2>&1 || true)"
+          echo "--- via node_modules/.bin: $shim_out"
+          case "$shim_out" in
+            *"daemon bundle is missing"*)
+              echo "::error::daemon install cannot find the daemon when run through a bin shim"; exit 1;;
+          esac
+          test -f /tmp/npxlike/home/.codex/agentchat/bin/agentchat-daemon.mjs || {
+            echo "::error::daemon install did not place the durable daemon copy"; exit 1; }
+          echo "daemon install works through the published bin ✓"
+          cd "$GITHUB_WORKSPACE"
+
       - run: npm publish --provenance --access public

@@ -120,6 +120,30 @@ describe('daemon install points the service at the daemon, not the CLI', () => {
     expect(code).toBe(1)
   })
 
+  it('finds the daemon when invoked through a bin shim, as npx does', async () => {
+    // npx does not run dist/index.js — it runs node_modules/.bin/agentchat-codex,
+    // a symlink to it. That makes process.argv[1] point at .bin/, so resolving
+    // the daemon relative to argv[1] looked for node_modules/.bin/daemon-main.js
+    // and `daemon install` failed with "the daemon bundle is missing from this
+    // install" for every user. It shipped in 0.0.12, because every test ran the
+    // bundle by its real path — the one way nobody invokes it.
+    const home = path.join(sandbox, '.codex', 'agentchat')
+    fs.mkdirSync(home, { recursive: true })
+    fs.writeFileSync(
+      path.join(home, 'credentials'),
+      JSON.stringify({ api_key: 'ac_live_' + 'a'.repeat(40), handle: 'codex-agent' }),
+    )
+
+    const binDir = path.join(sandbox, 'fake-node-modules', '.bin')
+    fs.mkdirSync(binDir, { recursive: true })
+    const shim = path.join(binDir, 'agentchat-codex')
+    fs.symlinkSync(CLI, shim)
+
+    const { out } = await run(shim, ['daemon', 'install'])
+    expect(out).not.toMatch(/daemon bundle is missing/i)
+    expect(fs.existsSync(path.join(home, 'bin', 'agentchat-daemon.mjs'))).toBe(true)
+  })
+
   it('copies the daemon to a durable path outside the npx cache', async () => {
     // npx runs this package from a cache directory that is cleaned without
     // warning, so a unit naming that path silently stops serving.

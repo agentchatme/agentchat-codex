@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { ANCHOR_START, ANCHOR_END, removeAnchorAt, writeAnchor, log } from '@agentchatme/agent-core'
 import { codexHome, identityHome, anchorFile, invocation } from './host.js'
+import { fileURLToPath } from 'node:url'
 
 // ─── Codex wiring (merge-safe) ──────────────────────────────────────────────
 //
@@ -59,9 +60,17 @@ const DAEMON_REL = path.join('bin', 'agentchat-daemon.mjs')
 
 /** The daemon bundle as published, beside this running CLI. */
 export function shippedDaemonPath(): string {
-  const self = process.argv[1]
-  const dir = self ? path.dirname(self) : process.cwd()
-  return path.join(dir, 'daemon-main.js')
+  // Anchored to THIS MODULE, not to process.argv[1].
+  //
+  // argv[1] is whatever was invoked, and under npx that is the bin shim in
+  // `node_modules/.bin/` — so this resolved to `node_modules/.bin/daemon-main.js`
+  // and `daemon install` failed with "the daemon bundle is missing from this
+  // install" for every user. It only worked when the bundle was run by its real
+  // path, which is how it was tested and not how anyone runs it.
+  //
+  // import.meta.url is the running file itself, and the daemon is published
+  // beside it, so this holds under npx, a global install, or a bare clone.
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), 'daemon-main.js')
 }
 
 /** The durable path the installed service actually runs. */
