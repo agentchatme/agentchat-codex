@@ -68,60 +68,48 @@ jobs:
       # `prepublishOnly`, which re-ran a `clean: true` bundler and deleted the
       # very file that had just been verified.
       #
-      # A filesystem check before publish cannot see that. So assert on the PACK
-      # LIST — what npm will really send — and run every entry point, because
-      # "the file is present" was exactly the check that let a dead artifact
-      # through.
-      - name: the tarball contains both bundles, and they run
+      # So: build the REAL tarball, unpack it somewhere empty, and run what came
+      # out. No dry-run report, no JSON parsing — earlier versions of this guard
+      # tried to read `npm pack --json` and blocked two good releases because
+      # prepack scripts write to the same stdout, and npm's output shape differs
+      # between the runner's npm and a contributor's. Untarring cannot drift.
+      - name: the published tarball contains both bundles, and they run
         run: |
-          # `npm pack` runs prepack/prepare, and those scripts write to STDOUT —
-          # so `--json` output arrives with a build log glued to the front of it
-          # and JSON.parse dies on the first character. Keep only from the
-          # opening bracket. (This guard failing is how v0.0.12 did not ship.)
-          npm pack --dry-run --json 2>/dev/null | sed -n '/^\[/,$p' > /tmp/pack.json
-          node -e '
-            const fs = require("fs");
-            const raw = fs.readFileSync("/tmp/pack.json", "utf8").trim();
-            if (!raw) { console.error("npm pack produced no JSON at all"); process.exit(1); }
-            let parsed;
-            try { parsed = JSON.parse(raw); }
-            catch (e) { console.error("npm pack JSON was unreadable: " + e.message); process.exit(1); }
-            const entry = Array.isArray(parsed) ? parsed[0] : parsed;
-            if (!entry || !Array.isArray(entry.files)) { console.error("npm pack JSON had no file list"); process.exit(1); }
-            const files = entry.files.map(f => f.path);
-            const missing = ["dist/index.js", "dist/daemon-main.js"].filter(r => !files.includes(r));
-            if (missing.length) {
-              console.error("tarball is missing: " + missing.join(", "));
-              console.error("it contains:\n  " + files.join("\n  "));
-              process.exit(1);
-            }
-            console.log("tarball contents OK:\n  " + files.join("\n  "));
-          '
-          # Self-contained means self-contained: both entries must start with no
-          # node_modules beside them, which is how npx will run them. Each is
-          # given an argument it actually accepts, so a startup failure is the
-          # only thing that can fail this.
-          rm -rf /tmp/selftest && mkdir -p /tmp/selftest/empty-home
-          # Diagnostics go to STDERR: this is called in a command substitution,
-          # so anything on stdout becomes part of the value being tested.
-          check() {
-            entry="$1"; shift
-            out="$(cd /tmp/selftest && node "$GITHUB_WORKSPACE/$entry" "$@" 2>&1 || true)"
-            echo "--- $entry $*" >&2
-            echo "$out" >&2
-            case "$out" in
-              *"Cannot find module"*|*"ERR_MODULE_NOT_FOUND"*|*"Dynamic require"*)
-                echo "::error::$entry is not self-contained" >&2; exit 1;;
-            esac
-            printf '%s' "$out"
-          }
-          check dist/index.js --version >/dev/null
-          # The daemon must reach identity resolution — proof it is the daemon
-          # and not something that exits at argument parsing.
-          daemon_out="$(check dist/daemon-main.js --home /tmp/selftest/empty-home)"
+          set -euo pipefail
+          rm -rf /tmp/verify && mkdir -p /tmp/verify
+          # --ignore-scripts: dist was just built by the step above, and letting
+          # prepack rebuild is exactly what destroyed 0.0.11's tarball.
+          tgz="$(npm pack --ignore-scripts --pack-destination /tmp/verify | tail -1)"
+          echo "packed: $tgz"
+          tar xzf "/tmp/verify/$tgz" -C /tmp/verify
+          echo "--- tarball contents ---"
+          (cd /tmp/verify/package && find . -type f | sed 's|^\./|  |' | sort)
+
+          for f in dist/index.js dist/daemon-main.js; do
+            if [ ! -f "/tmp/verify/package/$f" ]; then
+              echo "::error::the tarball is missing $f"; exit 1
+            fi
+          done
+
+          # Run them from the unpacked tarball with no node_modules beside it —
+          # exactly how npx will. A missing inlined dependency dies here.
+          mkdir -p /tmp/verify/empty-home
+          cd /tmp/verify/package
+
+          cli_out="$(node dist/index.js --version 2>&1 || true)"
+          echo "--- cli --version: $cli_out"
+          case "$cli_out" in
+            *"Cannot find module"*|*"ERR_MODULE_NOT_FOUND"*|*"Dynamic require"*)
+              echo "::error::the CLI is not self-contained"; exit 1;;
+          esac
+          [ "$cli_out" = "$(node -p "require('/tmp/verify/package/package.json').version")" ] || {
+            echo "::error::--version printed '$cli_out', which is not the published version"; exit 1; }
+
+          daemon_out="$(node dist/daemon-main.js --home /tmp/verify/empty-home 2>&1 || true)"
+          echo "--- daemon: $daemon_out"
           case "$daemon_out" in
-            *"no AgentChat identity"*) echo "daemon entry starts ✓" ;;
-            *) echo "::error::dist/daemon-main.js did not start"; exit 1 ;;
+            *"no AgentChat identity"*) echo "both bundles start from the tarball" ;;
+            *) echo "::error::the daemon did not start from the tarball"; exit 1;;
           esac
 
       - run: npm publish --provenance --access public
