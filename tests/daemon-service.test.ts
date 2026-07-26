@@ -45,6 +45,11 @@ function run(
           PATH: process.env['PATH'] ?? '',
           HOME: sandbox,
           CODEX_HOME: path.join(sandbox, '.codex'),
+          // HOME sandboxes where a unit FILE lands, but launchctl/systemctl
+          // always address the REAL user's domain. Without this, running these
+          // tests registers actual services on the developer's machine pointed
+          // at a temp dir that is about to be deleted. It did exactly that.
+          AGENTCHAT_SERVICE_DRY_RUN: '1',
           ...env,
         },
         timeout: 20_000,
