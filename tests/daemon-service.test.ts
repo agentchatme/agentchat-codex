@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -69,6 +69,36 @@ function run(
   })
 }
 
+/** Start a script, let it run for `ms`, then kill it. Returns what it said and
+ *  whether it was STILL ALIVE — which is the point for a resident daemon. */
+function runFor(
+  script: string,
+  args: string[],
+  ms: number,
+  env: Record<string, string> = {},
+): Promise<{ out: string; alive: boolean }> {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [script, ...args], {
+      env: { PATH: process.env['PATH'] ?? '', HOME: sandbox, AGENTCHAT_SERVICE_DRY_RUN: '1', ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let out = ''
+    let exited = false
+    child.stdout.on('data', (d) => (out += d))
+    child.stderr.on('data', (d) => (out += d))
+    child.on('exit', () => (exited = true))
+    setTimeout(() => {
+      const alive = !exited
+      try {
+        child.kill('SIGTERM')
+      } catch {
+        /* already gone */
+      }
+      setTimeout(() => resolve({ out, alive }), 150)
+    }, ms)
+  })
+}
+
 describe('the daemon bundle ships in the tarball', () => {
   it('is built beside the CLI', () => {
     expect(fs.existsSync(DAEMON)).toBe(true)
@@ -77,33 +107,33 @@ describe('the daemon bundle ships in the tarball', () => {
   it('is a different artifact from the CLI — the CLI must never carry the socket layer', () => {
     // `ws` is CommonJS and reaches for `require` at runtime; bundled into the
     // CLI it kills `install`, `register` and both hooks at startup.
-    expect(fs.readFileSync(DAEMON, 'utf-8')).toContain('holding the wire')
-    expect(fs.readFileSync(CLI, 'utf-8')).not.toContain('holding the wire')
+    expect(fs.readFileSync(DAEMON, 'utf-8')).toContain('daemon up as')
+    expect(fs.readFileSync(CLI, 'utf-8')).not.toContain('daemon up as')
   })
 })
 
-describe('the daemon entry actually runs', () => {
-  it('starts, parses --home, and reaches identity resolution', async () => {
+describe('the daemon is RESIDENT — it idles rather than exiting', () => {
+  it('stays alive with no identity instead of exiting and being restarted forever', async () => {
     const home = path.join(sandbox, 'empty-home')
     fs.mkdirSync(home, { recursive: true })
 
-    const { code, out } = await run(DAEMON, ['--home', home])
+    const { out, alive } = await runFor(DAEMON, ['--home', home], 1500)
 
-    // Reaching "no identity" proves it got through module load, argument
-    // parsing and into runDaemon. The regression printed usage instead.
-    expect(out).toMatch(/no AgentChat identity/i)
+    // The regression: it threw "no identity", exited 1, and the service
+    // manager restarted it on a loop — which is what `logout` used to leave
+    // behind on every machine.
+    expect(alive, `the daemon exited instead of idling:\n${out}`).toBe(true)
+    expect(out).toMatch(/always-on resident/i)
     expect(out).not.toMatch(/Unknown option|Usage:/i)
-    // And specifically NOT the failure mode of bundling `ws` into ESM.
     expect(out).not.toMatch(/Dynamic require/i)
-    expect(code).toBe(1)
-  })
+  }, 20_000)
 
-  it('carries its whole runtime — it runs straight out of an npx cache', async () => {
+  it('carries its whole runtime — no bare-clone module resolution', async () => {
     const home = path.join(sandbox, 'empty-home-2')
     fs.mkdirSync(home, { recursive: true })
-    const { out } = await run(DAEMON, ['--home', home])
+    const { out } = await runFor(DAEMON, ['--home', home], 1200)
     expect(out).not.toMatch(/Cannot find (module|package)|ERR_MODULE_NOT_FOUND/i)
-  })
+  }, 20_000)
 
   it('acts on the home it is GIVEN, not one it picks', async () => {
     const a = path.join(sandbox, 'home-a')
@@ -111,17 +141,20 @@ describe('the daemon entry actually runs', () => {
     fs.mkdirSync(a, { recursive: true })
     fs.mkdirSync(b, { recursive: true })
 
-    const ra = await run(DAEMON, ['--home', a])
-    expect(ra.out).toContain(a)
-    expect(ra.out).not.toContain(b)
-  })
+    const { out } = await runFor(DAEMON, ['--home', a], 1200)
+    expect(out).toContain(a)
+    expect(out).not.toContain(b)
+  }, 20_000)
 })
 
 describe('daemon install points the service at the daemon, not the CLI', () => {
-  it('refuses to install without an identity rather than wiring a dead unit', async () => {
-    const { code, out } = await run(CLI, ['daemon', 'install'])
-    expect(out).toMatch(/register first/i)
-    expect(code).toBe(1)
+  it('registers the service with NO identity — install and sign-in are separate', async () => {
+    // It used to refuse without credentials, which is what tied the daemon's
+    // existence to the login state: installing gave you no always-on, and
+    // logging out left a service that could not resolve an identity.
+    const { out } = await run(CLI, ['daemon', 'install'])
+    expect(out).not.toMatch(/register first/i)
+    expect(out).toMatch(/Always-on is ON/i)
   })
 
   it('finds the daemon when invoked through a bin shim, as npx does', async () => {
