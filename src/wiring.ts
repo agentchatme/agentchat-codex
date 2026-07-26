@@ -50,6 +50,38 @@ export function stableBundlePath(): string {
   return path.join(identityHome(), BUNDLE_REL)
 }
 
+// The always-on daemon ships beside the CLI in this package's tarball, and gets
+// the same stable-copy treatment for the same reason: `npx` runs us out of a
+// cache directory that is cleaned without warning, and a service unit pointing
+// into it would silently stop serving. `daemon install` copies it here and
+// points the unit at this path.
+const DAEMON_REL = path.join('bin', 'agentchat-daemon.mjs')
+
+/** The daemon bundle as published, beside this running CLI. */
+export function shippedDaemonPath(): string {
+  const self = process.argv[1]
+  const dir = self ? path.dirname(self) : process.cwd()
+  return path.join(dir, 'daemon-main.js')
+}
+
+/** The durable path the installed service actually runs. */
+export function stableDaemonPath(): string {
+  return path.join(identityHome(), DAEMON_REL)
+}
+
+/** Copy the daemon bundle to its durable path and return that path. */
+export function copyDaemonBundle(): string {
+  const src = shippedDaemonPath()
+  if (!fs.existsSync(src)) {
+    throw new Error(`the daemon bundle is missing from this install (expected ${src})`)
+  }
+  const dest = stableDaemonPath()
+  fs.mkdirSync(path.dirname(dest), { recursive: true })
+  if (path.resolve(src) !== path.resolve(dest)) fs.copyFileSync(src, dest)
+  fs.chmodSync(dest, 0o755)
+  return dest
+}
+
 /**
  * True when THIS tool has wired Codex — our fenced block is in config.toml.
  *

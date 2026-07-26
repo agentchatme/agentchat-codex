@@ -34,3 +34,17 @@ jobs:
       - run: pnpm type-check
       - run: pnpm build
       - run: pnpm test
+
+      # The daemon must actually run, with no node_modules beside it — which is
+      # how npx runs it. Its predecessor was wired to a command that did not
+      # exist and restart-looped in production behind a green pipeline, because
+      # the only check on it was that a file existed.
+      - name: the daemon entry starts
+        run: |
+          home="$(mktemp -d)"
+          out="$(cd "$(mktemp -d)" && node "$GITHUB_WORKSPACE/dist/daemon-main.js" --home "$home" 2>&1 || true)"
+          echo "$out"
+          case "$out" in
+            *"no AgentChat identity"*) echo "daemon reached identity resolution ✓" ;;
+            *) echo "::error::the daemon did not start: $out"; exit 1 ;;
+          esac

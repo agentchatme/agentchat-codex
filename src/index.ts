@@ -9,7 +9,7 @@ import {
   readCredentials,
 } from '@agentchatme/agent-core'
 import { identityHome, invocation, SERVICE_LABEL, serviceEnv, LABEL } from './host.js'
-import { installCodex } from './wiring.js'
+import { installCodex, copyDaemonBundle } from './wiring.js'
 import { runRegister, runLogin, runRecover, runStatus, runLogout, runDoctor } from './identity.js'
 import { runSessionStart, runUserPrompt, runStop } from './hooks.js'
 import { VERSION } from './version.js'
@@ -165,7 +165,13 @@ function runDaemonCmd(sub: string | undefined): number {
         return 1
       }
       try {
-        installService({ label: SERVICE_LABEL, home, env: serviceEnv() })
+        // Copy the daemon somewhere durable first and point the unit THERE.
+        // npx runs this package out of a cache directory that is cleaned
+        // without warning, so a unit naming that path would silently stop
+        // serving. Re-copying on every install also refreshes the daemon after
+        // a package upgrade.
+        const entry = copyDaemonBundle()
+        installService({ label: SERVICE_LABEL, home, entry, env: serviceEnv() })
       } catch (err) {
         console.error(`Could not install the always-on service: ${String(err)}`)
         return 1

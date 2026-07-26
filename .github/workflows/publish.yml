@@ -21,6 +21,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # TEMPORARY: @agentchatme/agent-core has not had its first gated npm
+      # release yet, so we build the engine from source and link it. Delete
+      # this step and depend on the published version once it ships.
+      - uses: actions/checkout@v4
+        with:
+          repository: agentchatme/agentchat-agent-core
+          path: .agent-core
       - uses: pnpm/action-setup@v4
         with:
           version: 11
@@ -28,6 +35,11 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - name: build the engine from source (temporary — see above)
+        run: |
+          cd .agent-core
+          pnpm install --no-frozen-lockfile
+          pnpm build
       - run: pnpm install --no-frozen-lockfile
       - run: pnpm type-check
       - run: pnpm build
@@ -46,6 +58,15 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+      # The engine must be present HERE too, not just in `gate`. Jobs do not
+      # share a workspace, and `pnpm build` cannot resolve
+      # `@agentchatme/agent-core` without it — the previous version of this file
+      # bootstrapped nothing in either job, so the first tag pushed would have
+      # died on its very first build step.
+      - uses: actions/checkout@v4
+        with:
+          repository: agentchatme/agentchat-agent-core
+          path: .agent-core
       - uses: pnpm/action-setup@v4
         with:
           version: 11
@@ -55,6 +76,62 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: npm install -g npm@latest
+      - name: build the engine from source (temporary — see above)
+        run: |
+          cd .agent-core
+          pnpm install --no-frozen-lockfile
+          pnpm build
       - run: pnpm install --no-frozen-lockfile
       - run: pnpm build
+
+      # ── What actually goes in the tarball ──
+      #
+      # @agentchatme/codex@0.0.11 shipped BROKEN from a fully green pipeline:
+      # every user got "The AgentChat engine is missing from this install".
+      # The gate had run `test -f <engine>` and passed — then `npm publish` ran
+      # `prepublishOnly`, which re-ran a `clean: true` bundler and deleted the
+      # very file that had just been verified.
+      #
+      # A filesystem check before publish cannot see that. So assert on the PACK
+      # LIST — what npm will really send — and run every entry point, because
+      # "the file is present" was exactly the check that let a dead artifact
+      # through.
+      - name: the tarball contains both bundles, and they run
+        run: |
+          npm pack --dry-run --json > /tmp/pack.json
+          node -e '
+            const files = require("/tmp/pack.json")[0].files.map(f => f.path);
+            const missing = ["dist/index.js", "dist/daemon-main.js"].filter(r => !files.includes(r));
+            if (missing.length) {
+              console.error("tarball is missing: " + missing.join(", "));
+              console.error("it contains:\n  " + files.join("\n  "));
+              process.exit(1);
+            }
+            console.log("tarball contents OK:\n  " + files.join("\n  "));
+          '
+          # Self-contained means self-contained: both entries must start with no
+          # node_modules beside them, which is how npx will run them. Each is
+          # given an argument it actually accepts, so a startup failure is the
+          # only thing that can fail this.
+          rm -rf /tmp/selftest && mkdir -p /tmp/selftest/empty-home
+          check() {
+            entry="$1"; shift
+            out="$(cd /tmp/selftest && node "$GITHUB_WORKSPACE/$entry" "$@" 2>&1 || true)"
+            echo "--- $entry $*"
+            echo "$out"
+            case "$out" in
+              *"Cannot find module"*|*"ERR_MODULE_NOT_FOUND"*|*"Dynamic require"*)
+                echo "::error::$entry is not self-contained"; exit 1;;
+            esac
+            printf '%s' "$out"
+          }
+          check dist/index.js --version
+          # The daemon must reach identity resolution — proof it is the daemon
+          # and not something that exits at argument parsing.
+          daemon_out="$(check dist/daemon-main.js --home /tmp/selftest/empty-home)"
+          case "$daemon_out" in
+            *"no AgentChat identity"*) echo "daemon entry starts ✓" ;;
+            *) echo "::error::dist/daemon-main.js did not start"; exit 1 ;;
+          esac
+
       - run: npm publish --provenance --access public
