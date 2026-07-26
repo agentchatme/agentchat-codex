@@ -21,13 +21,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # TEMPORARY: @agentchatme/agent-core has not had its first gated npm
-      # release yet, so we build the engine from source and link it. Delete
-      # this step and depend on the published version once it ships.
-      - uses: actions/checkout@v4
-        with:
-          repository: agentchatme/agentchat-agent-core
-          path: .agent-core
       - uses: pnpm/action-setup@v4
         with:
           version: 11
@@ -35,12 +28,9 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - name: build the engine from source (temporary — see above)
-        run: |
-          cd .agent-core
-          pnpm install --no-frozen-lockfile
-          pnpm build
-      - run: pnpm install --no-frozen-lockfile
+      # --frozen-lockfile now that the engine is a published, pinned version
+      # rather than a filesystem link to a checkout of its moving main branch.
+      - run: pnpm install --frozen-lockfile
       - run: pnpm type-check
       - run: pnpm build
       - run: pnpm test
@@ -58,15 +48,6 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      # The engine must be present HERE too, not just in `gate`. Jobs do not
-      # share a workspace, and `pnpm build` cannot resolve
-      # `@agentchatme/agent-core` without it — the previous version of this file
-      # bootstrapped nothing in either job, so the first tag pushed would have
-      # died on its very first build step.
-      - uses: actions/checkout@v4
-        with:
-          repository: agentchatme/agentchat-agent-core
-          path: .agent-core
       - uses: pnpm/action-setup@v4
         with:
           version: 11
@@ -76,12 +57,7 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: npm install -g npm@latest
-      - name: build the engine from source (temporary — see above)
-        run: |
-          cd .agent-core
-          pnpm install --no-frozen-lockfile
-          pnpm build
-      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
       # ── What actually goes in the tarball ──
