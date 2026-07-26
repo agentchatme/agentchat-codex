@@ -192,3 +192,11 @@ describe('every hint is a runnable command', () => {
     })
   }
 })
+
+describe('the published bundle is self-contained', () => {
+  it('has no external imports left to resolve', () => {
+    // Runs out of an npx cache with no guaranteed node_modules beside it.
+    const bundle = fs.readFileSync(BIN, 'utf-8')
+    expect(bundle).not.toMatch(/^import .* from ["'](agentchatme|@agentchatme\/|zod)/m)
+  })
+})
