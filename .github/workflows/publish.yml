@@ -105,12 +105,19 @@ jobs:
           [ "$cli_out" = "$(node -p "require('/tmp/verify/package/package.json').version")" ] || {
             echo "::error::--version printed '$cli_out', which is not the published version"; exit 1; }
 
-          daemon_out="$(node dist/daemon-main.js --home /tmp/verify/empty-home 2>&1 || true)"
-          echo "--- daemon: $daemon_out"
-          case "$daemon_out" in
-            *"no AgentChat identity"*) echo "both bundles start from the tarball" ;;
-            *) echo "::error::the daemon did not start from the tarball"; exit 1;;
-          esac
+          # The daemon is RESIDENT: it idles rather than exiting, so this is
+          # bounded by killing it, not by waiting. Waiting is what hung CI.
+          dlog="$(mktemp)"
+          ( node dist/daemon-main.js --home /tmp/verify/empty-home >"$dlog" 2>&1 ) &
+          dpid=$!
+          sleep 6
+          dalive=0; kill -0 $dpid 2>/dev/null && dalive=1
+          kill $dpid 2>/dev/null || true
+          wait $dpid 2>/dev/null || true
+          echo "--- daemon:"; cat "$dlog"
+          [ "$dalive" = "1" ] || { echo "::error::the daemon exited instead of idling"; exit 1; }
+          grep -q "always-on resident" "$dlog" || { echo "::error::the daemon did not come up from the tarball"; exit 1; }
+          echo "both bundles run from the tarball, and the daemon is resident"
 
           # ── And through a bin shim, which is how npx actually runs it ──
           #
