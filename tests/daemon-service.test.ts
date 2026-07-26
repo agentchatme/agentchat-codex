@@ -37,7 +37,10 @@ function run(
   env: Record<string, string> = {},
 ): Promise<{ code: number | null; out: string }> {
   return new Promise((resolve) => {
-    execFile(
+    // Close stdin. The hook subcommands read a JSON payload from it, so a child
+    // left with an open pipe waits forever — which is also exactly what a host
+    // does NOT do: it writes the payload and closes.
+    const child = execFile(
       process.execPath,
       [script, ...args],
       {
@@ -62,6 +65,7 @@ function run(
         })
       },
     )
+    child.stdin?.end()
   })
 }
 
@@ -161,5 +165,56 @@ describe('daemon install points the service at the daemon, not the CLI', () => {
     const stable = path.join(home, 'bin', 'agentchat-daemon.mjs')
     expect(fs.existsSync(stable)).toBe(true)
     expect(fs.readFileSync(stable, 'utf-8')).toBe(fs.readFileSync(DAEMON, 'utf-8'))
+  })
+})
+
+// ─── The hooks it wires must actually run ───────────────────────────────────
+//
+// 0.0.13 shipped with every session hook broken. The wiring wrote
+// `hook <event> --platform codex`, a leftover from the shared CLI that served
+// every coding agent; this binary removed that flag and rejects it. So each
+// hook exited on "Unknown option '--platform'" and printed usage to stdout —
+// no inbox digest, no mid-task pickup, no delivery acks.
+//
+// Nothing caught it because the hooks were only ever invoked BY HAND with
+// arguments someone believed were right. These run the commands the installer
+// actually writes into hooks.json.
+describe('the hook commands it writes into hooks.json run', () => {
+  it('every wired hook exits cleanly and prints no usage text', { timeout: 30_000 }, async () => {
+    const codexHome = path.join(sandbox, '.codex')
+    fs.mkdirSync(path.join(codexHome, 'agentchat'), { recursive: true })
+    fs.writeFileSync(
+      path.join(codexHome, 'agentchat', 'credentials'),
+      JSON.stringify({ api_key: 'ac_live_' + 'a'.repeat(40), handle: 'codex-agent' }),
+    )
+
+    // Wire Codex exactly as `npx @agentchatme/codex` does.
+    await run(CLI, [])
+
+    const hooksFile = path.join(codexHome, 'hooks.json')
+    expect(fs.existsSync(hooksFile)).toBe(true)
+    const wired = JSON.parse(fs.readFileSync(hooksFile, 'utf-8')) as Record<string, any>
+    const events = (wired['hooks'] ?? wired) as Record<string, Array<Record<string, any>>>
+
+    const commands: string[] = []
+    for (const groups of Object.values(events)) {
+      for (const group of groups) {
+        for (const h of group['hooks'] ?? []) {
+          if (typeof h?.command === 'string') commands.push(h.command)
+        }
+      }
+    }
+    // SessionStart + UserPromptSubmit + Stop
+    expect(commands.length).toBe(3)
+
+    for (const command of commands) {
+      // Each is `node "<bundle>" hook <event>`; run it the way the host does.
+      const m = command.match(/^node "([^"]+)" (.+)$/)
+      expect(m, `unexpected hook command shape: ${command}`).not.toBeNull()
+      const argv = (m![2] as string).split(/\s+/)
+      const { out } = await run(m![1] as string, argv, { AGENTCHAT_HOOKS_ENABLED: '0' })
+      expect(out, `hook rejected its own arguments: ${command}\n${out}`).not.toMatch(/Unknown option/i)
+      expect(out, `hook printed usage instead of running: ${command}\n${out}`).not.toMatch(/^Usage:/im)
+    }
   })
 })

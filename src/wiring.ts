@@ -210,7 +210,10 @@ interface HooksDoc {
 
 function ourHookGroups(bundle: string): Record<string, HookGroup[]> {
   const cmd = (sub: string, timeout: number): HookGroup => ({
-    hooks: [{ type: 'command', command: `node "${bundle}" hook ${sub} --platform codex`, timeout }],
+    // No `--platform`: this binary IS the Codex integration, and the flag was
+    // removed with the shared CLI. Passing it made every hook exit on "Unknown
+    // option" and print usage to stdout — no digest, no pickup, no acks.
+    hooks: [{ type: 'command', command: `node "${bundle}" hook ${sub}`, timeout }],
   })
   return {
     SessionStart: [{ matcher: 'startup|resume', ...cmd('session-start', 15) }],
