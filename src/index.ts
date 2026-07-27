@@ -14,7 +14,7 @@ import {
 } from '@agentchatme/agent-core'
 import { identityHome, invocation, SERVICE_LABEL, serviceEnv, LABEL } from './host.js'
 import { installCodex, copyDaemonBundle } from './wiring.js'
-import { runRegister, runLogin, runRecover, runStatus, runLogout, runDoctor } from './identity.js'
+import { runRegister, runLogin, runRecover, runStatus, runLogout, runDoctor, runNotNow } from './identity.js'
 import { runSessionStart, runUserPrompt, runStop } from './hooks.js'
 import { ensureAlwaysOn, removeAlwaysOn } from './always-on.js'
 import { VERSION } from './version.js'
@@ -25,6 +25,7 @@ Usage:
   ${invocation()}                                  wire Codex up
   ${invocation()} register --email <e> --handle <h>
   ${invocation()} register --code <6-digit-code>
+  ${invocation()} register --not-now                stop offering to set this up
   ${invocation()} login --api-key <ac_…>           already have an account
   ${invocation()} recover --email <email>          lost your key (rotates it)
   ${invocation()} recover --code <6-digit-code>
@@ -59,6 +60,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         'api-base': { type: 'string' },
         json: { type: 'boolean' },
         fix: { type: 'boolean' },
+        'not-now': { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
       },
@@ -108,6 +110,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
             `Last step — give ${LABEL} its @handle:`,
             `  Open Codex and it will offer to set one up — or run:`,
             `    ${invocation()} register --email <email> --handle <handle>`,
+            '',
+            'One optional step: Codex requires new hooks to be approved before it will',
+            'run them. Run `/hooks` in Codex and trust the three AgentChat entries to get',
+            'inbox digests delivered into your session. Everything else already works.',
           ].join('\n'),
         )
       } else {
@@ -117,6 +123,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
 
     case 'register':
+      // "not now" is answered through register because that is the prompt being
+      // declined — and it must be recorded, since the offer lives in AGENTS.md
+      // where static text would otherwise re-ask every session.
+      if (values['not-now'] === true) return runNotNow()
       return runRegister({
         ...(values.email !== undefined ? { email: values.email } : {}),
         ...(values.handle !== undefined ? { handle: values.handle } : {}),

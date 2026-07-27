@@ -1,7 +1,16 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { ANCHOR_START, ANCHOR_END, removeAnchorAt, writeAnchor, log } from '@agentchatme/agent-core'
-import { codexHome, identityHome, anchorFile, invocation } from './host.js'
+import {
+  ANCHOR_START,
+  ANCHOR_END,
+  removeAnchorAt,
+  writeAnchor,
+  log,
+  offerDeclined,
+  renderUnregisteredBlock,
+  renderDeclinedBlock,
+} from '@agentchatme/agent-core'
+import { codexHome, identityHome, anchorFile, invocation, hostCopy } from './host.js'
 import { fileURLToPath } from 'node:url'
 
 // ─── Codex wiring (merge-safe) ──────────────────────────────────────────────
@@ -344,9 +353,24 @@ export function installCodex(bundleSrc: string, handle: string | null): CodexIns
       warnings.push(`AGENTS.md write failed: ${String(err)}`)
     }
   } else {
-    // Codex is wired now, so registering writes AGENTS.md by itself — no
-    // second `install` pass (see isCodexWired / anchorFor).
-    warnings.push(`no identity yet — \`${invocation() + ' register'}\` writes AGENTS.md once you have a handle`)
+    // No handle yet — and this is where discovery has to happen.
+    //
+    // Codex requires every hook to be reviewed and trusted before it runs, and
+    // treats new or CHANGED hooks as untrusted. So on a fresh install all three
+    // of ours are SKIPPED, and the session-start hook that would have offered
+    // to set up a handle never fires. Users saw an install that appeared to do
+    // nothing and had no way to know AgentChat was there at all.
+    //
+    // AGENTS.md is always loaded and needs no approval, so the offer goes here
+    // instead. Registering replaces this block (upsertAnchorBlock strips before
+    // it writes), and `--not-now` swaps it for the silent variant.
+    const declined = offerDeclined(identityHome())
+    try {
+      writeAnchor(anchorFile(), declined ? renderDeclinedBlock(hostCopy()) : renderUnregisteredBlock(hostCopy()))
+      actions.push(declined ? 'AGENTS.md ← AgentChat present (not asking)' : 'AGENTS.md ← setup offer')
+    } catch (err) {
+      warnings.push(`AGENTS.md write failed: ${String(err)}`)
+    }
   }
 
   log.debug(`codex install: ${actions.join('; ')}`)

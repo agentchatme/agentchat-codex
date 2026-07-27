@@ -1,6 +1,16 @@
-import { createIdentityCommands, type DoctorCheck, type HostProfile } from '@agentchatme/agent-core'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import {
+  createIdentityCommands,
+  recordOfferDeclined,
+  clearOfferDeclined,
+  renderDeclinedBlock,
+  writeAnchor,
+  type DoctorCheck,
+  type HostProfile,
+} from '@agentchatme/agent-core'
 import { identityHome, anchorFile, invocation, LABEL } from './host.js'
-import { renderCodexAgents, isCodexWired, removeCodexWiring } from './wiring.js'
+import { renderCodexAgents, isCodexWired, removeCodexWiring, codexHooksPath, codexConfigPath } from './wiring.js'
 
 // ─── This agent, described once ─────────────────────────────────────────────
 //
@@ -39,11 +49,80 @@ const profile: HostProfile = {
         verdict: wired ? 'PASS' : 'WARN',
         detail: wired ? 'config.toml has the agentchat MCP server' : `not wired — run \`${invocation()}\``,
       },
+      hookTrustCheck(),
     ]
   },
 }
 
-export const { runRegister, runLogin, runRecover, runStatus, runLogout, runDoctor } =
-  createIdentityCommands(profile)
+/**
+ * Is Codex actually going to RUN the hooks we wrote?
+ *
+ * Codex requires every command hook to be reviewed and trusted before it runs,
+ * and treats new or CHANGED hooks as untrusted — it records trust as a
+ * `[hooks.state."<hooks.json>:<event>:<group>:<handler>"]` entry in config.toml.
+ * Until the user runs `/hooks` and approves ours, all three are SKIPPED: no
+ * setup offer, no inbox digest, no mid-task pickup, no delivery acks. Silently.
+ *
+ * `doctor` reported everything green while that was true, which is how it went
+ * unnoticed. It cannot verify the HASH (the algorithm is Codex's, undocumented)
+ * — but presence versus absence is exactly the fresh-install case, and that is
+ * the one that was biting people.
+ */
+function hookTrustCheck(): DoctorCheck {
+  const hooksPath = codexHooksPath()
+  if (!fs.existsSync(hooksPath)) {
+    return { name: 'hook-trust', verdict: 'WARN', detail: `no hooks.json — run \`${invocation()}\`` }
+  }
+  let cfg = ''
+  try {
+    cfg = fs.readFileSync(codexConfigPath(), 'utf-8')
+  } catch {
+    /* treated as untrusted below */
+  }
+  // Codex keys trust on the hooks.json path plus the snake_case event name.
+  const events = ['session_start', 'user_prompt_submit', 'stop']
+  const missing = events.filter((e) => !cfg.includes(`${hooksPath}:${e}`))
+  if (missing.length === 0) {
+    return { name: 'hook-trust', verdict: 'PASS', detail: 'Codex has trusted the AgentChat hooks' }
+  }
+  return {
+    name: 'hook-trust',
+    verdict: 'WARN',
+    detail:
+      `${missing.length}/3 hooks not trusted by Codex yet — run \`/hooks\` in Codex and approve them. ` +
+      'Until then there is no inbox digest, no mid-task pickup and no delivery acks.',
+  }
+}
+
+const commands = createIdentityCommands(profile)
+
+/**
+ * Record "not now" and stop asking.
+ *
+ * The setup offer lives in AGENTS.md because Codex's hook trust means the
+ * session-start hook may never fire. Static instruction text has no memory, so
+ * without this an agent re-reads the offer and raises it every single session —
+ * trading a silent failure for a nag. This persists the answer and rewrites the
+ * block to a variant that states the fact and instructs nothing.
+ */
+export function runNotNow(): number {
+  const home = identityHome()
+  recordOfferDeclined(home)
+  try {
+    writeAnchor(anchorFile(), renderDeclinedBlock({ invoke: invocation(), label: LABEL }))
+  } catch (err) {
+    console.error(`Recorded, but could not update ${path.basename(anchorFile())}: ${String(err)}`)
+    return 1
+  }
+  console.log(
+    [
+      `Noted — ${LABEL} will not ask about AgentChat again.`,
+      `Changed your mind? ${invocation()} register --email <email> --handle <handle>`,
+    ].join('\n'),
+  )
+  return 0
+}
+
+export const { runRegister, runLogin, runRecover, runStatus, runLogout, runDoctor } = commands
 
 export type { RegisterOpts, DoctorOpts } from '@agentchatme/agent-core'
