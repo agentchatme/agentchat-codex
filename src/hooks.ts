@@ -1,6 +1,7 @@
-import { createHookRunners } from '@agentchatme/agent-core'
+import { createHookRunners, log } from '@agentchatme/agent-core'
 import { identityHome, hostCopy } from './host.js'
 import { sessionStartOutput, stopOutput, printJson } from './dialect.js'
+import { ensureAlwaysOn } from './always-on.js'
 
 // ─── Session hooks ──────────────────────────────────────────────────────────
 //
@@ -13,7 +14,35 @@ import { sessionStartOutput, stopOutput, printJson } from './dialect.js'
 // unchanged: exit code is ALWAYS 0. A failing hook degrades to "no AgentChat
 // context this turn", never to a broken session.
 
-export const { runSessionStart, runUserPrompt, runStop } = createHookRunners(
+const runners = createHookRunners(
   () => ({ home: identityHome(), copy: hostCopy() }),
   { sessionStartOutput, stopOutput, printJson },
 )
+
+/**
+ * Self-heal from any hook. `install` registers always-on, but a user who
+ * installed before that shipped — or whose service was removed — should not
+ * have to re-run anything. A no-op once registered, and it respects a
+ * deliberate `daemon disable`.
+ */
+function ensureAlwaysOnQuietly(): void {
+  try {
+    const r = ensureAlwaysOn()
+    if (!r.ok && r.detail !== 'switched off by the user') log.warn(`always-on not registered: ${r.detail}`)
+  } catch (err) {
+    log.warn(`always-on not registered: ${String(err)}`)
+  }
+}
+
+export async function runSessionStart(): Promise<void> {
+  ensureAlwaysOnQuietly()
+  await runners.runSessionStart()
+}
+export async function runUserPrompt(): Promise<void> {
+  ensureAlwaysOnQuietly()
+  await runners.runUserPrompt()
+}
+export async function runStop(): Promise<void> {
+  ensureAlwaysOnQuietly()
+  await runners.runStop()
+}
