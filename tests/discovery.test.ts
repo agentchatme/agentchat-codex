@@ -155,3 +155,55 @@ describe('doctor reports whether Codex will actually run the hooks', () => {
     expect(out).toMatch(/PASS hook-trust|hook-trust: Codex has trusted/)
   })
 })
+
+// ─── The manual ─────────────────────────────────────────────────────────────
+//
+// Codex skills are on-demand and may never fire, so identity lives in the
+// always-loaded AGENTS.md. But the manual is ~13 KB, and paying that on every
+// session whether or not the agent touches AgentChat is the wrong trade. So it
+// goes to disk and the anchor points at it — loaded when about to act, free
+// otherwise. Same two-layer shape the Claude Code plugin uses, without a plugin.
+//
+// Before this, Codex agents had ~21 lines of etiquette against Claude Code's
+// 152: no error codes, no account states, no triage, no contacts.
+describe('the agent gets the full manual, not a summary', () => {
+  it('install writes it to disk', async () => {
+    await run([])
+    const manual = path.join(codexHome(), 'agentchat', 'SKILL.md')
+    expect(fs.existsSync(manual)).toBe(true)
+    const body = fs.readFileSync(manual, 'utf-8')
+    expect(body.length).toBeGreaterThan(8000)
+  })
+
+  it('covers what the 21-line anchor never did', async () => {
+    await run([])
+    const body = fs.readFileSync(path.join(codexHome(), 'agentchat', 'SKILL.md'), 'utf-8')
+    for (const topic of ['AWAITING_REPLY', 'RATE_LIMITED', 'INBOX_RESTRICTED', 'Account states', 'contacts', 'Inbox triage']) {
+      expect(body, `manual should cover ${topic}`).toContain(topic)
+    }
+  })
+
+  it('never tells the agent to use a flag this binary rejects', async () => {
+    await run([])
+    const body = fs.readFileSync(path.join(codexHome(), 'agentchat', 'SKILL.md'), 'utf-8')
+    // The hand-maintained copy had drifted into instructing `--platform`, which
+    // was removed with the shared CLI and is now rejected outright.
+    expect(body).not.toContain('--platform')
+    expect(body).not.toContain('logout --all')
+  })
+
+  it('names THIS host and the peer correctly — it is rendered, not copied', async () => {
+    await run([])
+    const body = fs.readFileSync(path.join(codexHome(), 'agentchat', 'SKILL.md'), 'utf-8')
+    expect(body).toContain('npx -y @agentchatme/codex')
+    expect(body).toContain('Claude Code') // the peer, explained
+  })
+
+  it('stays out of the always-loaded anchor — that is the whole point', async () => {
+    await run([])
+    const anchor = fs.readFileSync(path.join(codexHome(), 'AGENTS.md'), 'utf-8')
+    const manual = fs.readFileSync(path.join(codexHome(), 'agentchat', 'SKILL.md'), 'utf-8')
+    expect(anchor.length).toBeLessThan(4000)
+    expect(anchor.length).toBeLessThan(manual.length / 3)
+  })
+})

@@ -9,6 +9,7 @@ import {
   offerDeclined,
   renderUnregisteredBlock,
   renderDeclinedBlock,
+  renderManual,
 } from '@agentchatme/agent-core'
 import { codexHome, identityHome, anchorFile, invocation, hostCopy } from './host.js'
 import { fileURLToPath } from 'node:url'
@@ -66,6 +67,31 @@ export function stableBundlePath(): string {
 // into it would silently stop serving. `daemon install` copies it here and
 // points the unit at this path.
 const DAEMON_REL = path.join('bin', 'agentchat-daemon.mjs')
+
+// The agent-facing manual, on disk.
+//
+// Codex skills are ON-DEMAND and may never fire, which is why identity lives in
+// the always-loaded AGENTS.md. But the full manual is 13 KB — paying for that
+// on every session and every turn, whether or not the agent touches AgentChat,
+// is the wrong trade. So it goes to disk and the anchor points at it: loaded
+// when the agent is about to act, free otherwise. Same two-layer shape the
+// Claude Code plugin uses, without needing a plugin to do it.
+const MANUAL_REL = 'SKILL.md'
+
+export function manualPath(): string {
+  return path.join(identityHome(), MANUAL_REL)
+}
+
+/** Write the manual. Best-effort: a failure must not fail the install. */
+function writeManual(): boolean {
+  try {
+    fs.mkdirSync(identityHome(), { recursive: true })
+    fs.writeFileSync(manualPath(), renderManual({ ...hostCopy(), peerLabel: 'Claude Code', peerInvoke: '/plugin marketplace add agentchatme/agentchat-claude-code' }))
+    return true
+  } catch {
+    return false
+  }
+}
 
 /** The daemon bundle as published, beside this running CLI. */
 export function shippedDaemonPath(): string {
@@ -142,7 +168,9 @@ export function renderCodexAgents(handle: string): string {
     '',
     `**Your handle is yours, not the machine's.** If your human also runs another coding agent here (Claude Code, say), that one is a separate peer with its own handle — you can DM each other like any other pair. Every \`agentchat\` CLI command acts on exactly one agent, so always pass \`--platform codex\` to act on YOURS: \`agentchat status --platform codex\`, \`agentchat logout --platform codex\`. Nothing you run will touch the other agent.`,
     '',
-    'Each AgentChat tool carries its own etiquette and error guidance at the point of use. If tools error with auth problems, tell your human to run `agentchat doctor` (add `--fix` to repair a stale identity anchor).',
+    `**The full manual is at \`${manualPath()}\`.** Read it before you act on AgentChat for the first time in a session — it covers the cold-outreach rules, group etiquette, contacts, every error code and what to do about it. This block is the summary; that file is the reference.`,
+    '',
+    `Each AgentChat tool carries its own etiquette and error guidance at the point of use. If tools error with auth problems, tell your human to run \`${invocation()} doctor\` (add \`--fix\` to repair a stale identity anchor).`,
     ANCHOR_END,
   ].join('\n')
 }
@@ -344,7 +372,11 @@ export function installCodex(bundleSrc: string, handle: string | null): CodexIns
     actions.push('hooks.json ← SessionStart + Stop + UserPromptSubmit')
   }
 
-  // 4. AGENTS.md — identity + condensed loop-safety etiquette (always-loaded)
+  // 4. SKILL.md — the full manual, read on demand (see MANUAL_REL above)
+  if (writeManual()) actions.push('SKILL.md ← the manual')
+  else warnings.push('could not write the AgentChat manual — the agent will have only the anchor')
+
+  // 5. AGENTS.md — identity + condensed etiquette (always-loaded) + a pointer
   if (handle) {
     try {
       writeAnchor(anchorFile(), renderCodexAgents(handle), handle)
