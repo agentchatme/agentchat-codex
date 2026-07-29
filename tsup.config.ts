@@ -8,8 +8,8 @@ import { defineConfig } from 'tsup'
 //                        `daemon install` and run by the service unit.
 //
 // The engine is BUNDLED into both rather than left as a runtime dependency: no
-// second install step, no npx cold start, and no window in which the front door
-// and the engine are different versions. `splitting:false` plus a total
+// second core install/resolution step and no window in which the front door and
+// the engine are different versions. `splitting:false` plus a total
 // `noExternal` is what keeps each file standalone — it runs straight out of an
 // npx cache with no node_modules beside it, so one external import is a hard
 // crash at startup for every user.

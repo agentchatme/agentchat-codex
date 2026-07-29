@@ -65,6 +65,7 @@ async function run(args: string[]): Promise<{ code: number; stdout: string; stde
         // Unroutable: nothing in these tests should reach the network.
         AGENTCHAT_API_BASE: 'http://127.0.0.1:9',
         AGENTCHAT_LOG_LEVEL: 'silent',
+        AGENTCHAT_SERVICE_DRY_RUN: '1',
       },
     })
     return { code: 0, stdout, stderr }
@@ -125,7 +126,7 @@ describe('there is no way to address another agent', () => {
     expect(out.stderr).toContain("Unknown option '--platform'")
   })
 
-  it('logout removes only this agent’s footprint', async () => {
+  it('logout signs out only this agent and keeps the integration installed', async () => {
     await run([])
     fs.writeFileSync(
       path.join(sandbox, '.codex', 'agentchat', 'credentials'),
@@ -141,8 +142,31 @@ describe('there is no way to address another agent', () => {
     expect(fs.existsSync(path.join(sandbox, '.claude', 'agentchat', 'credentials'))).toBe(true)
     // …while this agent really is signed out.
     expect(fs.existsSync(path.join(sandbox, '.codex', 'agentchat', 'credentials'))).toBe(false)
+    expect(fs.readFileSync(path.join(sandbox, '.codex', 'config.toml'), 'utf-8')).toContain(
+      '[mcp_servers.agentchat]',
+    )
+    expect(fs.existsSync(path.join(sandbox, '.codex', 'hooks.json'))).toBe(true)
+  })
+
+  it('uninstall removes Codex wiring but preserves the signed-in identity', async () => {
+    await run([])
+    const credentials = path.join(sandbox, '.codex', 'agentchat', 'credentials')
+    fs.writeFileSync(
+      credentials,
+      JSON.stringify({ api_key: 'ac_live_' + 'c'.repeat(40), handle: 'codex-agent' }),
+    )
+
+    const out = await run(['uninstall'])
+
+    expect(out.code).toBe(0)
+    expect(out.stdout).toContain('AgentChat identity was preserved')
+    expect(fs.existsSync(credentials)).toBe(true)
     expect(fs.readFileSync(path.join(sandbox, '.codex', 'config.toml'), 'utf-8')).not.toContain(
       '[mcp_servers.agentchat]',
+    )
+    expect(fs.existsSync(path.join(sandbox, '.codex', 'hooks.json'))).toBe(false)
+    expect(fs.existsSync(path.join(sandbox, '.codex', 'agentchat', 'bin', 'agentchat.mjs'))).toBe(
+      false,
     )
   })
 

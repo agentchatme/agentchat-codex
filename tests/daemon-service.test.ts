@@ -199,6 +199,23 @@ describe('daemon install points the service at the daemon, not the CLI', () => {
     expect(fs.existsSync(stable)).toBe(true)
     expect(fs.readFileSync(stable, 'utf-8')).toBe(fs.readFileSync(DAEMON, 'utf-8'))
   })
+
+  it('repairs a missing durable daemon from the next hook', async () => {
+    const home = path.join(sandbox, '.codex', 'agentchat')
+    await run(CLI, ['daemon', 'install'])
+    const stable = path.join(home, 'bin', 'agentchat-daemon.mjs')
+    expect(fs.existsSync(stable)).toBe(true)
+
+    fs.unlinkSync(stable)
+    const { code, out } = await run(CLI, ['hook', 'user-prompt'])
+
+    expect(code, out).toBe(0)
+    expect(fs.existsSync(stable)).toBe(true)
+    expect(fs.readFileSync(stable, 'utf-8')).toBe(fs.readFileSync(DAEMON, 'utf-8'))
+    expect(fs.readFileSync(path.join(home, 'always-on.installed-version'), 'utf-8').trim()).toMatch(
+      /^\d+\.\d+\.\d+$/,
+    )
+  })
 })
 
 // ─── The hooks it wires must actually run ───────────────────────────────────

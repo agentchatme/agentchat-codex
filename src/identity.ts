@@ -1,16 +1,43 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { spawnSync } from 'node:child_process'
 import {
+  alwaysOnOptedOut,
+  alwaysOnState,
+  alwaysOnWanted,
   createIdentityCommands,
+  readAlwaysOnInstalledVersion,
+  readCredentials,
   recordOfferDeclined,
   clearOfferDeclined,
   renderDeclinedBlock,
+  serviceDefinitionCurrent,
+  serviceInstalled,
   writeAnchor,
   type DoctorCheck,
   type HostProfile,
 } from '@agentchatme/agent-core'
-import { identityHome, anchorFile, invocation, LABEL } from './host.js'
-import { renderCodexAgents, isCodexWired, removeCodexWiring, codexHooksPath, codexConfigPath } from './wiring.js'
+import {
+  identityHome,
+  anchorFile,
+  invocation,
+  LABEL,
+  SERVICE_LABEL,
+  serviceEnv,
+} from './host.js'
+import {
+  renderCodexAgents,
+  isCodexWired,
+  codexHooksPath,
+  codexConfigPath,
+  installCodex,
+  manualPath,
+  stableBundlePath,
+  stableDaemonPath,
+} from './wiring.js'
+import { AGENTCHAT_MCP_PACKAGE } from './adapter.js'
+import { ensureAlwaysOn } from './always-on.js'
+import { VERSION } from './version.js'
 
 // ─── This agent, described once ─────────────────────────────────────────────
 //
@@ -19,8 +46,7 @@ import { renderCodexAgents, isCodexWired, removeCodexWiring, codexHooksPath, cod
 // credential file holds — so the flows live in @agentchatme/agent-core and this
 // file only says which agent they act on, plus what is genuinely different
 // about Codex: it wires ITSELF into config.toml and hooks.json, so it has
-// wiring to check and wiring to tear down. A host whose installer does that for
-// it (a Claude Code plugin) supplies neither.
+// wiring to check. Explicit uninstallation owns teardown; signing out does not.
 //
 // It used to be ~515 lines here and ~510 in the Claude Code integration, 94%
 // identical, and already drifting.
@@ -40,18 +66,154 @@ const profile: HostProfile = {
   // hooks exist; otherwise the agent is told it has a phone number with nothing
   // to answer it.
   isWired: isCodexWired,
-  removeWiring: removeCodexWiring,
-  extraDoctorChecks: (): DoctorCheck[] => {
-    const wired = isCodexWired()
+  extraDoctorChecks: (opts): DoctorCheck[] => [
+    ...runtimeChecks(),
+    wiringCheck(opts.fix === true),
+    hookTrustCheck(),
+    alwaysOnCheck(opts.fix === true),
+  ],
+}
+
+function concise(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().slice(0, 180)
+}
+
+function runtimeChecks(): DoctorCheck[] {
+  const npx = spawnSync('npx', ['--version'], {
+    encoding: 'utf-8',
+    timeout: 5_000,
+    windowsHide: true,
+  })
+  const mcpRunner: DoctorCheck = {
+    name: 'mcp-runner',
+    verdict: !npx.error && npx.status === 0 ? 'PASS' : 'FAIL',
+    detail:
+      !npx.error && npx.status === 0
+        ? `npx ${concise(npx.stdout || npx.stderr)}`
+        : npx.error?.message ?? `npx exited ${npx.status}`,
+  }
+  const version = spawnSync('codex', ['--version'], {
+    encoding: 'utf-8',
+    timeout: 5_000,
+    windowsHide: true,
+  })
+  if (version.error || version.status !== 0) {
     return [
       {
-        name: 'wiring',
-        verdict: wired ? 'PASS' : 'WARN',
-        detail: wired ? 'config.toml has the agentchat MCP server' : `not wired — run \`${invocation()}\``,
+        name: 'codex-cli',
+        verdict: 'FAIL',
+        detail: version.error ? `unavailable: ${version.error.message}` : `exited ${version.status}`,
       },
-      hookTrustCheck(),
+      { name: 'codex-auth', verdict: 'FAIL', detail: 'cannot check until the Codex CLI works' },
+      mcpRunner,
     ]
-  },
+  }
+
+  const auth = spawnSync('codex', ['login', 'status'], {
+    encoding: 'utf-8',
+    timeout: 5_000,
+    windowsHide: true,
+  })
+  return [
+    {
+      name: 'codex-cli',
+      verdict: 'PASS',
+      detail: concise(version.stdout || version.stderr) || 'available',
+    },
+    {
+      name: 'codex-auth',
+      verdict: auth.status === 0 ? 'PASS' : 'FAIL',
+      detail:
+        auth.status === 0
+          ? 'Codex CLI is authenticated for autonomous turns'
+          : concise(auth.stderr || auth.stdout) || `login status exited ${auth.status}`,
+    },
+    mcpRunner,
+  ]
+}
+
+function wiringCheck(fix: boolean): DoctorCheck {
+  const current = (): boolean => {
+    try {
+      const config = fs.readFileSync(codexConfigPath(), 'utf-8')
+      return (
+        isCodexWired() &&
+        config.includes(AGENTCHAT_MCP_PACKAGE) &&
+        config.includes('required = true') &&
+        config.includes('agentchat_get_conversation') &&
+        config.includes('agentchat_send_message') &&
+        fs.existsSync(codexHooksPath()) &&
+        fs.existsSync(stableBundlePath()) &&
+        fs.existsSync(manualPath())
+      )
+    } catch {
+      return false
+    }
+  }
+
+  if (fix && !current()) {
+    try {
+      installCodex(process.argv[1] ?? '', readCredentials(identityHome())?.handle ?? null)
+    } catch (err) {
+      return { name: 'wiring', verdict: 'FAIL', detail: `repair failed: ${String(err)}` }
+    }
+  }
+  return current()
+    ? {
+        name: 'wiring',
+        verdict: 'PASS',
+        detail: `current MCP (${AGENTCHAT_MCP_PACKAGE}), hooks, bundle and manual`,
+      }
+    : {
+        name: 'wiring',
+        verdict: 'WARN',
+        detail: `missing or stale — run \`${invocation()}${fix ? '' : ' doctor --fix'}\``,
+      }
+}
+
+function alwaysOnCheck(fix: boolean): DoctorCheck {
+  const home = identityHome()
+  if (alwaysOnOptedOut(home)) {
+    return { name: 'always-on', verdict: 'PASS', detail: 'disabled by the user' }
+  }
+
+  const service = {
+    label: SERVICE_LABEL,
+    home,
+    entry: stableDaemonPath(),
+    env: serviceEnv(),
+  }
+  const current = (): boolean =>
+    alwaysOnWanted(home) &&
+    fs.existsSync(service.entry) &&
+    readAlwaysOnInstalledVersion(home) === VERSION &&
+    serviceInstalled(service) &&
+    serviceDefinitionCurrent(service)
+
+  if (fix && isCodexWired() && !current()) {
+    const repaired = ensureAlwaysOn()
+    if (!repaired.ok) {
+      return {
+        name: 'always-on',
+        verdict: 'FAIL',
+        detail: `repair failed: ${repaired.detail ?? 'unknown error'}`,
+      }
+    }
+  }
+  if (!current()) {
+    return {
+      name: 'always-on',
+      verdict: isCodexWired() ? 'FAIL' : 'WARN',
+      detail: `service, durable bundle or version marker is missing/stale — run \`${invocation()} doctor --fix\``,
+    }
+  }
+
+  const state = alwaysOnState(home)
+  return {
+    name: 'always-on',
+    verdict: state === 'down' ? 'FAIL' : 'PASS',
+    detail: `${state}; service definition and daemon bundle match ${VERSION}`,
+  }
 }
 
 /**

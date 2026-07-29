@@ -20,9 +20,15 @@ import {
   markAlwaysOnWanted,
   alwaysOnWanted,
   alwaysOnOptedOut,
+  serviceDefinitionCurrent,
+  readAlwaysOnInstalledVersion,
+  markAlwaysOnInstalledVersion,
+  clearAlwaysOnInstalledVersion,
 } from '@agentchatme/agent-core'
 import { identityHome, SERVICE_LABEL, serviceEnv } from './host.js'
-import { copyDaemonBundle } from './wiring.js'
+import { copyDaemonBundle, stableDaemonPath } from './wiring.js'
+import { VERSION } from './version.js'
+import * as fs from 'node:fs'
 
 export interface EnsureResult {
   ok: boolean
@@ -38,10 +44,26 @@ export function ensureAlwaysOn(opts: { force?: boolean } = {}): EnsureResult {
   // A deliberate `daemon disable` outranks any implicit re-registration. Only
   // an explicit `daemon install` clears it.
   if (!opts.force && alwaysOnOptedOut(home)) return { ok: false, detail: 'switched off by the user' }
-  if (!opts.force && alwaysOnWanted(home)) return { ok: true }
   try {
+    const stableEntry = stableDaemonPath()
+    const service = {
+      label: SERVICE_LABEL,
+      home,
+      entry: stableEntry,
+      env: serviceEnv(),
+    }
+    if (
+      !opts.force &&
+      alwaysOnWanted(home) &&
+      readAlwaysOnInstalledVersion(home) === VERSION &&
+      fs.existsSync(stableEntry) &&
+      serviceDefinitionCurrent(service)
+    ) {
+      return { ok: true }
+    }
     const entry = copyDaemonBundle()
-    installService({ label: SERVICE_LABEL, home, entry, env: serviceEnv() })
+    installService({ ...service, entry })
+    markAlwaysOnInstalledVersion(home, VERSION)
     markAlwaysOnWanted(home)
     return { ok: true }
   } catch (err) {
@@ -51,5 +73,7 @@ export function ensureAlwaysOn(opts: { force?: boolean } = {}): EnsureResult {
 
 /** Remove the service. The only thing that does. */
 export function removeAlwaysOn(): void {
-  uninstallService({ label: SERVICE_LABEL, home: identityHome() })
+  const home = identityHome()
+  uninstallService({ label: SERVICE_LABEL, home })
+  clearAlwaysOnInstalledVersion(home)
 }

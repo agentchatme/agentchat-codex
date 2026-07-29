@@ -10,9 +10,13 @@ import {
   renderUnregisteredBlock,
   renderDeclinedBlock,
   renderManual,
+  atomicCopyFile,
+  atomicWriteFile,
 } from '@agentchatme/agent-core'
 import { codexHome, identityHome, anchorFile, invocation, hostCopy } from './host.js'
 import { fileURLToPath } from 'node:url'
+import { AGENTCHAT_MCP_PACKAGE } from './adapter.js'
+import { VERSION } from './version.js'
 
 // ─── Codex wiring (merge-safe) ──────────────────────────────────────────────
 //
@@ -23,8 +27,8 @@ import { fileURLToPath } from 'node:url'
 //
 //   1. CODEX_HOME/config.toml   — our [mcp_servers.agentchat] block, wrapped
 //      in `# agentchat:start/end` comment fences and appended. Re-running
-//      replaces the fenced block; logout strips it; the rest of the file is
-//      byte-preserved (comments, ordering, other servers).
+//      replaces the fenced block; explicit uninstall strips it; the rest of
+//      the file is byte-preserved (comments, ordering, other servers).
 //   2. CODEX_HOME/hooks.json    — our SessionStart/Stop/UserPromptSubmit
 //      entries, MERGED into the event arrays and identified by our bundle
 //      path so logout removes exactly ours and leaves the user's hooks.
@@ -45,8 +49,19 @@ import { fileURLToPath } from 'node:url'
 const TOML_START = '# agentchat:start'
 const TOML_END = '# agentchat:end'
 // Every hook command we write contains this path fragment; it's how we find
-// and remove exactly our entries on logout without a custom schema field.
+// and remove exactly our entries on explicit uninstall without a custom schema
+// field.
 const BUNDLE_REL = path.join('bin', 'agentchat.mjs')
+
+function atomicText(file: string, data: string): void {
+  let mode = 0o600
+  try {
+    mode = fs.statSync(file).mode & 0o777
+  } catch {
+    /* new integration-owned file: private by default */
+  }
+  atomicWriteFile(file, data, mode)
+}
 
 export function codexConfigPath(): string {
   return path.join(codexHome(), 'config.toml')
@@ -86,7 +101,14 @@ export function manualPath(): string {
 function writeManual(): boolean {
   try {
     fs.mkdirSync(identityHome(), { recursive: true })
-    fs.writeFileSync(manualPath(), renderManual({ ...hostCopy(), peerLabel: 'Claude Code', peerInvoke: '/plugin marketplace add agentchatme/agentchat-claude-code' }))
+    atomicText(
+      manualPath(),
+      renderManual({
+        ...hostCopy(),
+        peerLabel: 'Claude Code',
+        peerInvoke: '/plugin marketplace add agentchatme/agentchat-claude-code',
+      }),
+    )
     return true
   } catch {
     return false
@@ -121,8 +143,8 @@ export function copyDaemonBundle(): string {
   }
   const dest = stableDaemonPath()
   fs.mkdirSync(path.dirname(dest), { recursive: true })
-  if (path.resolve(src) !== path.resolve(dest)) fs.copyFileSync(src, dest)
-  fs.chmodSync(dest, 0o755)
+  if (path.resolve(src) !== path.resolve(dest)) atomicCopyFile(src, dest)
+  else fs.chmodSync(dest, 0o755)
   return dest
 }
 
@@ -166,7 +188,7 @@ export function renderCodexAgents(handle: string): string {
     '',
     '**Cold DMs:** one message per new thread until they reply (a second send before a reply is rejected). Before committing your human to anything — a meeting, a price, sharing their code — check with them first; you are their agent, the counterpart is someone else\'s.',
     '',
-    `**Your handle is yours, not the machine's.** If your human also runs another coding agent here (Claude Code, say), that one is a separate peer with its own handle — you can DM each other like any other pair. Every \`agentchat\` CLI command acts on exactly one agent, so always pass \`--platform codex\` to act on YOURS: \`agentchat status --platform codex\`, \`agentchat logout --platform codex\`. Nothing you run will touch the other agent.`,
+    `**Your handle is yours, not the machine's.** If your human also runs another coding agent here (Claude Code, say), that one is a separate peer with its own handle — you can DM each other like any other pair. This integration acts only on the Codex agent: use \`${invocation()} status\` or \`${invocation()} logout\`. Nothing you run through this command touches the other agent.`,
     '',
     `**The full manual is at \`${manualPath()}\`.** Read it before you act on AgentChat for the first time in a session — it covers the cold-outreach rules, group etiquette, contacts, every error code and what to do about it. This block is the summary; that file is the reference.`,
     '',
@@ -185,8 +207,10 @@ function mcpBlock(): string {
     TOML_START,
     '[mcp_servers.agentchat]',
     'command = "npx"',
-    'args = ["-y", "@agentchatme/mcp"]',
+    `args = ["-y", ${tomlString(AGENTCHAT_MCP_PACKAGE)}]`,
     'startup_timeout_sec = 30',
+    'required = true',
+    'enabled_tools = ["agentchat_send_message", "agentchat_list_inbox", "agentchat_get_conversation", "agentchat_mark_read", "agentchat_get_my_status", "agentchat_list_contacts", "agentchat_add_contact", "agentchat_remove_contact", "agentchat_get_agent_profile", "agentchat_block_agent", "agentchat_unblock_agent", "agentchat_report_agent", "agentchat_create_group", "agentchat_get_group", "agentchat_list_group_invites", "agentchat_accept_group_invite", "agentchat_reject_group_invite", "agentchat_leave_group"]',
     '# Auto-run AgentChat tools without a prompt, scoped to THIS server only —',
     "# we never touch your global approval_policy or sandbox.",
     'default_tools_approval_mode = "approve"',
@@ -197,6 +221,8 @@ function mcpBlock(): string {
     '# agent on the same machine (each host = its own peer).',
     '[mcp_servers.agentchat.env]',
     `AGENTCHAT_HOME = ${tomlString(idHome)}`,
+    'AGENTCHAT_CLIENT_NAME = "codex"',
+    `AGENTCHAT_CLIENT_VERSION = ${tomlString(VERSION)}`,
     TOML_END,
   ].join('\n')
 }
@@ -253,7 +279,7 @@ function ourHookGroups(bundle: string): Record<string, HookGroup[]> {
     hooks: [{ type: 'command', command: `node "${bundle}" hook ${sub}`, timeout }],
   })
   return {
-    SessionStart: [{ matcher: 'startup|resume', ...cmd('session-start', 15) }],
+    SessionStart: [{ matcher: 'startup|resume|clear', ...cmd('session-start', 15) }],
     UserPromptSubmit: [cmd('user-prompt', 10)],
     Stop: [cmd('stop', 15)],
   }
@@ -315,7 +341,7 @@ function copyBundle(bundleSrc: string): string {
   fs.mkdirSync(path.dirname(dest), { recursive: true })
   const srcResolved = path.resolve(bundleSrc)
   if (srcResolved !== path.resolve(dest)) {
-    fs.copyFileSync(srcResolved, dest)
+    atomicCopyFile(srcResolved, dest)
   }
   return dest
 }
@@ -352,7 +378,7 @@ export function installCodex(bundleSrc: string, handle: string | null): CodexIns
       `${cfgPath} already defines [mcp_servers.agentchat] outside our block — left it untouched; remove it and re-run if it isn't ours`,
     )
   } else {
-    fs.writeFileSync(cfgPath, upsertTomlBlock(existingCfg, mcpBlock()), 'utf-8')
+    atomicText(cfgPath, upsertTomlBlock(existingCfg, mcpBlock()))
     actions.push(`config.toml ← [mcp_servers.agentchat]`)
   }
 
@@ -368,7 +394,7 @@ export function installCodex(bundleSrc: string, handle: string | null): CodexIns
   }
   if (existingHooks !== null || !fs.existsSync(hooksPath)) {
     const merged = mergeHooks(existingHooks, bundle)
-    fs.writeFileSync(hooksPath, JSON.stringify(merged, null, 2) + '\n', 'utf-8')
+    atomicText(hooksPath, JSON.stringify(merged, null, 2) + '\n')
     actions.push('hooks.json ← SessionStart + Stop + UserPromptSubmit')
   }
 
@@ -409,12 +435,14 @@ export function installCodex(bundleSrc: string, handle: string | null): CodexIns
   return { actions, warnings }
 }
 
-export function removeCodexWiring(): string[] {
+export function removeCodexWiring(
+  opts: { preserveDaemonBundle?: boolean } = {},
+): string[] {
   const removed: string[] = []
   const cfgPath = codexConfigPath()
   if (fs.existsSync(cfgPath)) {
     const stripped = stripTomlBlock(fs.readFileSync(cfgPath, 'utf-8'))
-    fs.writeFileSync(cfgPath, stripped, 'utf-8')
+    atomicText(cfgPath, stripped)
     removed.push('config.toml [mcp_servers.agentchat]')
   }
   const hooksPath = codexHooksPath()
@@ -422,12 +450,29 @@ export function removeCodexWiring(): string[] {
     try {
       const next = unmergeHooks(JSON.parse(fs.readFileSync(hooksPath, 'utf-8')) as HooksDoc)
       if (next === null) fs.unlinkSync(hooksPath)
-      else fs.writeFileSync(hooksPath, JSON.stringify(next, null, 2) + '\n', 'utf-8')
+      else atomicText(hooksPath, JSON.stringify(next, null, 2) + '\n')
       removed.push('hooks.json entries')
     } catch {
       // leave a malformed file alone
     }
   }
   if (removeAnchorAt(anchorFile()) === 'removed') removed.push('AGENTS.md anchor')
+  for (const [file, description] of [
+    [manualPath(), 'AgentChat manual'],
+    ...(opts.preserveDaemonBundle
+      ? []
+      : ([[stableDaemonPath(), 'stable daemon bundle']] as const)),
+    [stableBundlePath(), 'stable CLI bundle'],
+  ] as const) {
+    try {
+      if (fs.existsSync(file)) {
+        fs.unlinkSync(file)
+        removed.push(description)
+      }
+    } catch {
+      // The config and hook teardown is the security boundary. A locked
+      // Windows executable can be left inert and replaced on a future install.
+    }
+  }
   return removed
 }

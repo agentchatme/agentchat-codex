@@ -1,19 +1,14 @@
 import { parseArgs } from 'node:util'
 import {
-  alwaysOnOptedOut,
   alwaysOnState,
-  alwaysOnWanted,
   clearAlwaysOnOptOut,
   clearAlwaysOnWanted,
-  installService,
   markAlwaysOnOptOut,
-  markAlwaysOnWanted,
   readCredentials,
   serviceStatus,
-  uninstallService,
 } from '@agentchatme/agent-core'
-import { identityHome, invocation, SERVICE_LABEL, serviceEnv, LABEL } from './host.js'
-import { installCodex, copyDaemonBundle } from './wiring.js'
+import { identityHome, invocation, SERVICE_LABEL, LABEL } from './host.js'
+import { installCodex, removeCodexWiring } from './wiring.js'
 import { runRegister, runLogin, runRecover, runStatus, runLogout, runDoctor, runNotNow } from './identity.js'
 import { runSessionStart, runUserPrompt, runStop } from './hooks.js'
 import { ensureAlwaysOn, removeAlwaysOn } from './always-on.js'
@@ -31,6 +26,7 @@ Usage:
   ${invocation()} recover --code <6-digit-code>
   ${invocation()} status [--json]
   ${invocation()} logout
+  ${invocation()} uninstall                         remove the Codex integration
   ${invocation()} doctor [--fix]
   ${invocation()} daemon <install|disable|status|uninstall>
 
@@ -155,6 +151,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     case 'logout':
       return runLogout()
 
+    case 'uninstall':
+      return runUninstall()
+
     case 'doctor':
       return runDoctor({ ...(values.fix === true ? { fix: true } : {}) })
 
@@ -175,6 +174,40 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       console.error(USAGE)
       return 1
   }
+}
+
+function runUninstall(): number {
+  const home = identityHome()
+  const warnings: string[] = []
+  let serviceRemoved = true
+  try {
+    removeAlwaysOn()
+    clearAlwaysOnWanted(home)
+  } catch (err) {
+    serviceRemoved = false
+    warnings.push(`could not fully remove the always-on service: ${String(err)}`)
+  }
+
+  let removed: string[] = []
+  try {
+    // If service teardown failed, leave its executable in place. Removing a
+    // binary that a still-loaded restart policy points to creates a permanent
+    // restart loop; an inert durable copy is the safer partial uninstall.
+    removed = removeCodexWiring({ preserveDaemonBundle: !serviceRemoved })
+  } catch (err) {
+    warnings.push(`could not fully remove Codex wiring: ${String(err)}`)
+  }
+
+  console.log(
+    removed.length > 0
+      ? `Codex integration removed: ${removed.join(', ')}.`
+      : 'Codex integration was already removed.',
+  )
+  console.log(
+    `Your AgentChat identity was preserved. Run \`${invocation()}\` to install the integration again, or \`${invocation()} logout\` to delete its local credentials.`,
+  )
+  for (const warning of warnings) console.error(`Warning: ${warning}`)
+  return warnings.length > 0 ? 1 : 0
 }
 
 function runDaemonCmd(sub: string | undefined): number {

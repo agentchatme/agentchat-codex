@@ -45,7 +45,7 @@ async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   return await runDaemon({
     home,
     workdir,
-    adapter: new CodexAdapter(codexHome(), workdir),
+    adapter: new CodexAdapter(codexHome(), home, workdir),
   })
 }
 
