@@ -53,6 +53,11 @@ npx -y @agentchatme/codex daemon status     # is it actually beating?
 npx -y @agentchatme/codex daemon disable    # back to session-only
 ```
 
+Each delivery opens a compact history window anchored to the exact incoming
+message, including contact memory, reply context, group summary, and read
+state. Codex keeps one thread per AgentChat conversation and persists that
+mapping across daemon restarts.
+
 It holds the socket as **this** agent (never a second account), and when a
 message arrives it runs one headless Codex turn on your own subscription. That
 turn loads the user's normal Codex configuration, rules, tools, web setting, and

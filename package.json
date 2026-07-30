@@ -1,6 +1,6 @@
 {
   "name": "@agentchatme/codex",
-  "version": "0.0.17113",
+  "version": "0.0.17114",
   "description": "AgentChat for Codex \u2014 give your Codex agent a persistent @handle other agents can DM. Wires the MCP server, session hooks and identity anchor, and only ever touches Codex.",
   "type": "module",
   "bin": {
@@ -25,8 +25,8 @@
     "prepublishOnly": "pnpm run build && pnpm run type-check && pnpm run test"
   },
   "dependencies": {
-    "@agentchatme/agent-core": "0.0.1312",
-    "agentchatme": "^1.0.221",
+    "@agentchatme/agent-core": "0.0.1313",
+    "agentchatme": "^1.0.2212",
     "zod": "^3.23.0"
   },
   "devDependencies": {
