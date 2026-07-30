@@ -7,7 +7,7 @@ import * as path from 'node:path'
 // ─── A fresh install must be discoverable without a hook ────────────────────
 //
 // Codex requires every command hook to be reviewed and trusted before it runs,
-// and treats new or CHANGED hooks as untrusted. So on a fresh install all three
+// and treats new or CHANGED hooks as untrusted. So on a fresh install all four
 // of ours are SKIPPED — including the session-start hook that would have
 // offered to set up a handle. The user saw an install that appeared to do
 // nothing, with no way to learn AgentChat was even there.
@@ -142,11 +142,11 @@ describe('doctor reports whether Codex will actually run the hooks', () => {
     expect(out).toContain('/hooks')
   })
 
-  it('passes once config.toml records trust for all three events', async () => {
+  it('passes once config.toml records trust for all four events', async () => {
     await run([])
     const hooksPath = path.join(codexHome(), 'hooks.json')
     const cfgPath = path.join(codexHome(), 'config.toml')
-    const trust = ['session_start', 'user_prompt_submit', 'stop']
+    const trust = ['session_start', 'user_prompt_submit', 'stop', 'session_end']
       .map((e, i) => `\n[hooks.state."${hooksPath}:${e}:0:0"]\ntrusted_hash = "sha256:deadbeef${i}"\n`)
       .join('')
     fs.appendFileSync(cfgPath, trust)
@@ -162,7 +162,7 @@ describe('doctor reports whether Codex will actually run the hooks', () => {
 // always-loaded AGENTS.md. But the manual is ~13 KB, and paying that on every
 // session whether or not the agent touches AgentChat is the wrong trade. So it
 // goes to disk and the anchor points at it — loaded when about to act, free
-// otherwise. Same two-layer shape the Claude Code plugin uses, without a plugin.
+// otherwise. Same two-layer shape the Claude Code integration uses.
 //
 // Before this, Codex agents had ~21 lines of etiquette against Claude Code's
 // 152: no error codes, no account states, no triage, no contacts.
@@ -197,6 +197,7 @@ describe('the agent gets the full manual, not a summary', () => {
     const body = fs.readFileSync(path.join(codexHome(), 'agentchat', 'SKILL.md'), 'utf-8')
     expect(body).toContain('npx -y @agentchatme/codex')
     expect(body).toContain('Claude Code') // the peer, explained
+    expect(body).toContain('npx -y @agentchatme/claude-code')
   })
 
   it('stays out of the always-loaded anchor — that is the whole point', async () => {

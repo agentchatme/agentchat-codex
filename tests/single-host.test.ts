@@ -117,6 +117,97 @@ describe('wiring Codex', () => {
     expect(after).toContain('[mcp_servers.mine]')
     expect(after).toContain('[mcp_servers.agentchat]')
   })
+
+  it('refuses an unfenced MCP collision without leaving a partial integration', async () => {
+    const configPath = path.join(sandbox, '.codex', 'config.toml')
+    const original = '[mcp_servers.agentchat]\ncommand = "foreign-agentchat"\n'
+    fs.writeFileSync(configPath, original)
+
+    const out = await run([])
+
+    expect(out.code).toBe(1)
+    expect(out.stdout).toContain('wiring incomplete')
+    expect(out.stdout).toContain('left everything untouched')
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(original)
+    expect(fs.existsSync(path.join(sandbox, '.codex', 'hooks.json'))).toBe(false)
+    expect(
+      fs.existsSync(path.join(sandbox, '.codex', 'agentchat', 'bin', 'agentchat.mjs')),
+    ).toBe(false)
+  })
+
+  it('does not undo an explicit always-on disable during an upgrade', async () => {
+    expect((await run([])).code).toBe(0)
+    expect((await run(['daemon', 'disable'])).code).toBe(0)
+
+    const upgraded = await run([])
+
+    expect(upgraded.code).toBe(0)
+    expect(upgraded.stdout).toContain('always-on remains off (user choice)')
+    expect(
+      fs.existsSync(path.join(sandbox, '.codex', 'agentchat', 'always-on.optout')),
+    ).toBe(true)
+  })
+
+  it('preserves a user hook placed beside ours during upgrade and uninstall', async () => {
+    const hooksPath = path.join(sandbox, '.codex', 'hooks.json')
+    const oldBundle = path.join(
+      sandbox,
+      '.codex',
+      'agentchat',
+      'bin',
+      'agentchat.mjs',
+    )
+    fs.writeFileSync(
+      hooksPath,
+      JSON.stringify({
+        note: 'keep me',
+        hooks: {
+          Stop: [
+            {
+              matcher: 'user-matcher',
+              hooks: [
+                {
+                  type: 'command',
+                  command: `node "${oldBundle}" hook stop`,
+                },
+                {
+                  type: 'command',
+                  command: '/usr/local/bin/co-located-user-hook',
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    )
+
+    await run([])
+    const installed = JSON.parse(fs.readFileSync(hooksPath, 'utf-8')) as {
+      hooks: { Stop: Array<{ hooks: Array<{ command: string }> }> }
+    }
+    expect(
+      installed.hooks.Stop.flatMap((group) => group.hooks)
+        .filter((hook) => hook.command === '/usr/local/bin/co-located-user-hook'),
+    ).toHaveLength(1)
+
+    await run(['uninstall'])
+    expect(JSON.parse(fs.readFileSync(hooksPath, 'utf-8'))).toEqual({
+      note: 'keep me',
+      hooks: {
+        Stop: [
+          {
+            matcher: 'user-matcher',
+            hooks: [
+              {
+                type: 'command',
+                command: '/usr/local/bin/co-located-user-hook',
+              },
+            ],
+          },
+        ],
+      },
+    })
+  })
 })
 
 describe('there is no way to address another agent', () => {
@@ -172,7 +263,7 @@ describe('there is no way to address another agent', () => {
 
   it('mentions the OTHER agent’s front door rather than offering to do it', async () => {
     const out = await run(['--help'])
-    expect(out.stdout).toContain('agentchat-claude-code')
+    expect(out.stdout).toContain('npx -y @agentchatme/claude-code')
     expect(out.stdout.toLowerCase()).toContain('separate agentchat agent')
   })
 })

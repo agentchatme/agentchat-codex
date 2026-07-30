@@ -106,7 +106,7 @@ describe('the daemon bundle ships in the tarball', () => {
 
   it('is a different artifact from the CLI — the CLI must never carry the socket layer', () => {
     // `ws` is CommonJS and reaches for `require` at runtime; bundled into the
-    // CLI it kills `install`, `register` and both hooks at startup.
+    // CLI it kills `install`, `register` and every hook at startup.
     expect(fs.readFileSync(DAEMON, 'utf-8')).toContain('daemon up as')
     expect(fs.readFileSync(CLI, 'utf-8')).not.toContain('daemon up as')
   })
@@ -254,8 +254,8 @@ describe('the hook commands it writes into hooks.json run', () => {
         }
       }
     }
-    // SessionStart + UserPromptSubmit + Stop
-    expect(commands.length).toBe(3)
+    // SessionStart + UserPromptSubmit + Stop + SessionEnd
+    expect(commands.length).toBe(4)
 
     for (const command of commands) {
       // Each is `node "<bundle>" hook <event>`; run it the way the host does.

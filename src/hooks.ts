@@ -46,3 +46,6 @@ export async function runStop(): Promise<void> {
   ensureAlwaysOnQuietly()
   await runners.runStop()
 }
+export async function runSessionEnd(): Promise<void> {
+  await runners.runSessionEnd()
+}

@@ -29,7 +29,7 @@ import { VERSION } from './version.js'
 //      in `# agentchat:start/end` comment fences and appended. Re-running
 //      replaces the fenced block; explicit uninstall strips it; the rest of
 //      the file is byte-preserved (comments, ordering, other servers).
-//   2. CODEX_HOME/hooks.json    — our SessionStart/Stop/UserPromptSubmit
+//   2. CODEX_HOME/hooks.json    — our four lifecycle events
 //      entries, MERGED into the event arrays and identified by our bundle
 //      path so logout removes exactly ours and leaves the user's hooks.
 //   3. CODEX_HOME/AGENTS.md     — the identity anchor (shared fenced block).
@@ -90,7 +90,7 @@ const DAEMON_REL = path.join('bin', 'agentchat-daemon.mjs')
 // on every session and every turn, whether or not the agent touches AgentChat,
 // is the wrong trade. So it goes to disk and the anchor points at it: loaded
 // when the agent is about to act, free otherwise. Same two-layer shape the
-// Claude Code plugin uses, without needing a plugin to do it.
+// Claude Code integration uses, without needing a plugin to do it.
 const MANUAL_REL = 'SKILL.md'
 
 export function manualPath(): string {
@@ -106,7 +106,7 @@ function writeManual(): boolean {
       renderManual({
         ...hostCopy(),
         peerLabel: 'Claude Code',
-        peerInvoke: '/plugin marketplace add agentchatme/agentchat-claude-code',
+        peerInvoke: 'npx -y @agentchatme/claude-code',
       }),
     )
     return true
@@ -130,6 +130,11 @@ export function shippedDaemonPath(): string {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), 'daemon-main.js')
 }
 
+/** This running standalone CLI bundle, independent of an npm/npx bin shim. */
+export function shippedBundlePath(): string {
+  return fileURLToPath(import.meta.url)
+}
+
 /** The durable path the installed service actually runs. */
 export function stableDaemonPath(): string {
   return path.join(identityHome(), DAEMON_REL)
@@ -146,25 +151,6 @@ export function copyDaemonBundle(): string {
   if (path.resolve(src) !== path.resolve(dest)) atomicCopyFile(src, dest)
   else fs.chmodSync(dest, 0o755)
   return dest
-}
-
-/**
- * True when THIS tool has wired Codex — our fenced block is in config.toml.
- *
- * Anchoring identity into AGENTS.md only makes sense once the MCP server and
- * hooks exist; otherwise the agent is told it has a phone number with nothing
- * to answer it. Gating on the wiring (rather than on AGENTS.md already
- * existing) is what lets `install` → `register` finish the job in two steps
- * instead of needing `install` run a second time to pick up the handle.
- */
-export function isCodexWired(): boolean {
-  const cfg = codexConfigPath()
-  if (!fs.existsSync(cfg)) return false
-  try {
-    return fs.readFileSync(cfg, 'utf-8').includes(TOML_START)
-  } catch {
-    return false
-  }
 }
 
 // Codex "skills" are on-demand (may never trigger), so the loop-safety
@@ -265,6 +251,7 @@ interface HookLeaf {
 interface HookGroup {
   matcher?: string
   hooks: HookLeaf[]
+  [key: string]: unknown
 }
 interface HooksDoc {
   hooks?: Record<string, HookGroup[]>
@@ -279,18 +266,54 @@ function ourHookGroups(bundle: string): Record<string, HookGroup[]> {
     hooks: [{ type: 'command', command: `node "${bundle}" hook ${sub}`, timeout }],
   })
   return {
-    SessionStart: [{ matcher: 'startup|resume|clear', ...cmd('session-start', 15) }],
-    UserPromptSubmit: [cmd('user-prompt', 10)],
-    Stop: [cmd('stop', 15)],
+    SessionStart: [{ matcher: 'startup|resume|clear', ...cmd('session-start', 20) }],
+    UserPromptSubmit: [cmd('user-prompt', 12)],
+    Stop: [cmd('stop', 25)],
+    SessionEnd: [cmd('session-end', 10)],
   }
 }
 
-function groupIsOurs(g: unknown): boolean {
-  const grp = g as HookGroup | undefined
-  return (
-    Array.isArray(grp?.hooks) &&
-    grp!.hooks.some((h) => typeof h?.command === 'string' && h.command.includes(BUNDLE_REL))
-  )
+function hooksContainCurrent(doc: HooksDoc, bundle: string): boolean {
+  return Object.entries(ourHookGroups(bundle)).every(([event, expectedGroups]) => {
+    const actualGroups = doc.hooks?.[event]
+    return (
+      Array.isArray(actualGroups) &&
+      expectedGroups.every((expected) =>
+        actualGroups.some(
+          (actual) =>
+            actual.matcher === expected.matcher &&
+            expected.hooks.every((expectedLeaf) =>
+              actual.hooks.some(
+                (actualLeaf) =>
+                  actualLeaf.type === expectedLeaf.type &&
+                  actualLeaf.command === expectedLeaf.command &&
+                  actualLeaf.timeout === expectedLeaf.timeout,
+              ),
+            ),
+        ),
+      )
+    )
+  })
+}
+
+/**
+ * Remove only AgentChat's handler from a matcher group. A user may add another
+ * handler beside ours after install; upgrade and uninstall must preserve it.
+ */
+function withoutOurLeaves(groups: HookGroup[]): HookGroup[] {
+  const kept: HookGroup[] = []
+  for (const group of groups) {
+    if (!Array.isArray(group?.hooks)) {
+      kept.push(group)
+      continue
+    }
+    const hooks = group.hooks.filter(
+      (hook) => !(typeof hook?.command === 'string' && hook.command.includes(BUNDLE_REL)),
+    )
+    if (hooks.length === 0) continue
+    kept.push(hooks.length === group.hooks.length ? group : { ...group, hooks })
+  }
+  return kept
 }
 
 export function mergeHooks(existing: HooksDoc | null, bundle: string): HooksDoc {
@@ -299,7 +322,7 @@ export function mergeHooks(existing: HooksDoc | null, bundle: string): HooksDoc 
     doc.hooks && typeof doc.hooks === 'object' ? (doc.hooks as Record<string, HookGroup[]>) : {}
   for (const [event, groups] of Object.entries(ourHookGroups(bundle))) {
     const prior = Array.isArray(hooks[event]) ? hooks[event]! : []
-    hooks[event] = [...prior.filter((g) => !groupIsOurs(g)), ...groups]
+    hooks[event] = [...withoutOurLeaves(prior), ...groups]
   }
   doc.hooks = hooks
   return doc
@@ -312,7 +335,7 @@ export function unmergeHooks(existing: HooksDoc | null): HooksDoc | null {
   const hooks = existing.hooks as Record<string, HookGroup[]>
   let anyLeft = false
   for (const event of Object.keys(hooks)) {
-    const kept = (Array.isArray(hooks[event]) ? hooks[event]! : []).filter((g) => !groupIsOurs(g))
+    const kept = withoutOurLeaves(Array.isArray(hooks[event]) ? hooks[event]! : [])
     if (kept.length > 0) {
       hooks[event] = kept
       anyLeft = true
@@ -329,11 +352,32 @@ export function unmergeHooks(existing: HooksDoc | null): HooksDoc | null {
   return existing
 }
 
+/**
+ * True only when every Codex surface needed at runtime is current. Anchoring
+ * identity into AGENTS.md is safe only after MCP, hooks, bundle, and manual all
+ * exist; a fenced TOML block alone is not a working integration.
+ */
+export function isCodexWired(): boolean {
+  try {
+    const config = fs.readFileSync(codexConfigPath(), 'utf-8')
+    const hooks = JSON.parse(fs.readFileSync(codexHooksPath(), 'utf-8')) as HooksDoc
+    return (
+      config.includes(mcpBlock()) &&
+      hooksContainCurrent(hooks, stableBundlePath()) &&
+      fs.existsSync(stableBundlePath()) &&
+      fs.existsSync(manualPath())
+    )
+  } catch {
+    return false
+  }
+}
+
 // ─── Public install/remove ──────────────────────────────────────────────────
 
 export interface CodexInstallResult {
   actions: string[]
   warnings: string[]
+  complete: boolean
 }
 
 function copyBundle(bundleSrc: string): string {
@@ -347,56 +391,63 @@ function copyBundle(bundleSrc: string): string {
 }
 
 /**
- * Wire Codex end to end. `bundleSrc` is the path to this running CLI bundle
- * (process.argv[1]); we copy it to a stable home so the hooks don't depend
- * on npx cache or a global install. `handle` (when known) writes the AGENTS.md
- * identity anchor.
+ * Wire Codex end to end. We copy the running bundle itself to a stable home so
+ * hooks do not depend on an npm/npx bin shim, cache, or global install.
+ * `handle` (when known) writes the AGENTS.md identity anchor.
  */
-export function installCodex(bundleSrc: string, handle: string | null): CodexInstallResult {
+export function installCodex(handle: string | null): CodexInstallResult {
   const actions: string[] = []
   const warnings: string[] = []
   fs.mkdirSync(codexHome(), { recursive: true })
 
-  // 1. stable bundle copy (unless we ARE the stable bundle already)
-  let bundle: string
-  try {
-    bundle = copyBundle(bundleSrc)
-    actions.push(`bundle → ${bundle}`)
-  } catch (err) {
-    // Fall back to a bare `agentchat` on PATH if we can't copy ourselves.
-    bundle = stableBundlePath()
-    warnings.push(
-      `could not copy the CLI bundle (${String(err)}); hooks will use ${bundle} — ensure it exists`,
-    )
-  }
-
-  // 2. config.toml MCP block (fenced, byte-preserving)
+  // Validate both user-owned configuration files before touching a live
+  // surface. A known collision or malformed hooks file must not produce a
+  // misleading half-install.
   const cfgPath = codexConfigPath()
   const existingCfg = fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath, 'utf-8') : ''
   if (hasUnfencedAgentchatServer(existingCfg)) {
     warnings.push(
-      `${cfgPath} already defines [mcp_servers.agentchat] outside our block — left it untouched; remove it and re-run if it isn't ours`,
+      `${cfgPath} already defines [mcp_servers.agentchat] outside our block — left everything untouched; remove it and re-run if it isn't yours`,
     )
-  } else {
-    atomicText(cfgPath, upsertTomlBlock(existingCfg, mcpBlock()))
-    actions.push(`config.toml ← [mcp_servers.agentchat]`)
+    return { actions, warnings, complete: false }
   }
 
-  // 3. hooks.json merge
   const hooksPath = codexHooksPath()
   let existingHooks: HooksDoc | null = null
   if (fs.existsSync(hooksPath)) {
     try {
-      existingHooks = JSON.parse(fs.readFileSync(hooksPath, 'utf-8')) as HooksDoc
+      const parsed = JSON.parse(fs.readFileSync(hooksPath, 'utf-8')) as unknown
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        warnings.push(`${hooksPath} must contain a JSON object — left everything untouched`)
+        return { actions, warnings, complete: false }
+      }
+      existingHooks = parsed as HooksDoc
     } catch {
-      warnings.push(`${hooksPath} was not valid JSON — leaving it; wire hooks manually if needed`)
+      warnings.push(`${hooksPath} is not valid JSON — left everything untouched`)
+      return { actions, warnings, complete: false }
     }
   }
-  if (existingHooks !== null || !fs.existsSync(hooksPath)) {
-    const merged = mergeHooks(existingHooks, bundle)
-    atomicText(hooksPath, JSON.stringify(merged, null, 2) + '\n')
-    actions.push('hooks.json ← SessionStart + Stop + UserPromptSubmit')
+
+  // 1. stable bundle copy (unless we ARE the stable bundle already)
+  let bundle: string
+  try {
+    bundle = copyBundle(shippedBundlePath())
+    actions.push(`bundle → ${bundle}`)
+  } catch (err) {
+    warnings.push(
+      `could not copy the CLI bundle (${String(err)}); configuration was left untouched`,
+    )
+    return { actions, warnings, complete: false }
   }
+
+  // 2. config.toml MCP block (fenced, byte-preserving)
+  atomicText(cfgPath, upsertTomlBlock(existingCfg, mcpBlock()))
+  actions.push(`config.toml ← [mcp_servers.agentchat]`)
+
+  // 3. hooks.json merge
+  const merged = mergeHooks(existingHooks, bundle)
+  atomicText(hooksPath, JSON.stringify(merged, null, 2) + '\n')
+  actions.push('hooks.json ← SessionStart + UserPromptSubmit + Stop + SessionEnd')
 
   // 4. SKILL.md — the full manual, read on demand (see MANUAL_REL above)
   if (writeManual()) actions.push('SKILL.md ← the manual')
@@ -414,7 +465,7 @@ export function installCodex(bundleSrc: string, handle: string | null): CodexIns
     // No handle yet — and this is where discovery has to happen.
     //
     // Codex requires every hook to be reviewed and trusted before it runs, and
-    // treats new or CHANGED hooks as untrusted. So on a fresh install all three
+    // treats new or CHANGED hooks as untrusted. So on a fresh install all four
     // of ours are SKIPPED, and the session-start hook that would have offered
     // to set up a handle never fires. Users saw an install that appeared to do
     // nothing and had no way to know AgentChat was there at all.
@@ -432,7 +483,7 @@ export function installCodex(bundleSrc: string, handle: string | null): CodexIns
   }
 
   log.debug(`codex install: ${actions.join('; ')}`)
-  return { actions, warnings }
+  return { actions, warnings, complete: isCodexWired() }
 }
 
 export function removeCodexWiring(

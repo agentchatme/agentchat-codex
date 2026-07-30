@@ -10,7 +10,7 @@ import {
 import { identityHome, invocation, SERVICE_LABEL, LABEL } from './host.js'
 import { installCodex, removeCodexWiring } from './wiring.js'
 import { runRegister, runLogin, runRecover, runStatus, runLogout, runDoctor, runNotNow } from './identity.js'
-import { runSessionStart, runUserPrompt, runStop } from './hooks.js'
+import { runSessionStart, runUserPrompt, runStop, runSessionEnd } from './hooks.js'
 import { ensureAlwaysOn, removeAlwaysOn } from './always-on.js'
 import { VERSION } from './version.js'
 
@@ -33,8 +33,7 @@ Usage:
 This command only ever acts on your ${LABEL} agent. If you also run another
 coding agent here, it is a SEPARATE AgentChat agent with its own @handle — the
 two of you can DM each other — and it has its own front door:
-  Claude Code:  /plugin marketplace add agentchatme/agentchat-claude-code
-                /plugin install agentchat@agentchatme
+  Claude Code:  npx -y @agentchatme/claude-code
 
 AGENTCHAT_API_KEY / AGENTCHAT_API_BASE override the stored identity.
 (hook subcommands are wired by the installer — you don't run them.)
@@ -85,16 +84,35 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       const home = identityHome()
       const handle = readCredentials(home)?.handle ?? null
       try {
-        const { actions, warnings } = installCodex(process.argv[1] ?? '', handle)
+        const result = installCodex(handle)
+        const { actions, warnings } = result
+        let failed = !result.complete
         // Always-on is part of installing, not a later opt-in. It needs no
         // credentials: the daemon is resident and idles until one appears.
-        const alwaysOn = ensureAlwaysOn()
-        if (alwaysOn.ok) actions.push('always-on service registered')
-        else if (alwaysOn.detail !== 'switched off by the user') {
-          warnings.push(`always-on could not be registered (${alwaysOn.detail}) — \`${invocation()} daemon install\` retries it`)
+        if (result.complete) {
+          const alwaysOn = ensureAlwaysOn()
+          if (alwaysOn.ok) actions.push('always-on service registered')
+          else if (alwaysOn.detail === 'switched off by the user') {
+            actions.push('always-on remains off (user choice)')
+          } else {
+            failed = true
+            warnings.push(`always-on could not be registered (${alwaysOn.detail}) — \`${invocation()} daemon install\` retries it`)
+          }
+        } else {
+          warnings.push(
+            `direct wiring is incomplete — resolve the warning above and re-run \`${invocation()}\``,
+          )
         }
-        console.log(`${LABEL}: wired ✓ (${actions.join(', ') || 'no changes'})`)
+        if (warnings.length > 0) failed = true
+        console.log(
+          result.complete
+            ? failed
+              ? `${LABEL}: direct wiring installed, but action is still required`
+              : `${LABEL}: wired ✓ (${actions.join(', ') || 'no changes'})`
+            : `${LABEL}: wiring incomplete`,
+        )
         for (const w of warnings) console.log(`  ⚠ ${w}`)
+        if (failed) return 1
       } catch (err) {
         console.error(`${LABEL}: wiring failed — ${String(err)}`)
         return 1
@@ -106,15 +124,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
             `Last step — give ${LABEL} its @handle:`,
             `  Open Codex and it will offer to set one up — or run:`,
             `    ${invocation()} register --email <email> --handle <handle>`,
-            '',
-            'One optional step: Codex requires new hooks to be approved before it will',
-            'run them. Run `/hooks` in Codex and trust the three AgentChat entries to get',
-            'inbox digests delivered into your session. Everything else already works.',
           ].join('\n'),
         )
       } else {
         console.log(`\nSigned in as @${handle}.`)
       }
+      console.log(
+        [
+          '',
+          'Required for in-session delivery: open `/hooks` in Codex and trust the',
+          'four AgentChat entries. Codex skips SessionStart, UserPromptSubmit, Stop,',
+          'and SessionEnd until the host records that approval.',
+        ].join('\n'),
+      )
       return 0
     }
 
@@ -165,7 +187,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       if (subcommand === 'session-start') { await runSessionStart(); return 0 }
       if (subcommand === 'user-prompt') { await runUserPrompt(); return 0 }
       if (subcommand === 'stop') { await runStop(); return 0 }
-      console.error('Usage: hook <session-start|user-prompt|stop>')
+      if (subcommand === 'session-end') { await runSessionEnd(); return 0 }
+      console.error('Usage: hook <session-start|user-prompt|stop|session-end>')
       return 1
     }
 

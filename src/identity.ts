@@ -31,8 +31,6 @@ import {
   codexHooksPath,
   codexConfigPath,
   installCodex,
-  manualPath,
-  stableBundlePath,
   stableDaemonPath,
 } from './wiring.js'
 import { AGENTCHAT_MCP_PACKAGE } from './adapter.js'
@@ -133,27 +131,11 @@ function runtimeChecks(): DoctorCheck[] {
 }
 
 function wiringCheck(fix: boolean): DoctorCheck {
-  const current = (): boolean => {
-    try {
-      const config = fs.readFileSync(codexConfigPath(), 'utf-8')
-      return (
-        isCodexWired() &&
-        config.includes(AGENTCHAT_MCP_PACKAGE) &&
-        config.includes('required = true') &&
-        config.includes('agentchat_get_conversation') &&
-        config.includes('agentchat_send_message') &&
-        fs.existsSync(codexHooksPath()) &&
-        fs.existsSync(stableBundlePath()) &&
-        fs.existsSync(manualPath())
-      )
-    } catch {
-      return false
-    }
-  }
+  const current = (): boolean => isCodexWired()
 
   if (fix && !current()) {
     try {
-      installCodex(process.argv[1] ?? '', readCredentials(identityHome())?.handle ?? null)
+      installCodex(readCredentials(identityHome())?.handle ?? null)
     } catch (err) {
       return { name: 'wiring', verdict: 'FAIL', detail: `repair failed: ${String(err)}` }
     }
@@ -222,7 +204,7 @@ function alwaysOnCheck(fix: boolean): DoctorCheck {
  * Codex requires every command hook to be reviewed and trusted before it runs,
  * and treats new or CHANGED hooks as untrusted — it records trust as a
  * `[hooks.state."<hooks.json>:<event>:<group>:<handler>"]` entry in config.toml.
- * Until the user runs `/hooks` and approves ours, all three are SKIPPED: no
+ * Until the user runs `/hooks` and approves ours, all four are SKIPPED: no
  * setup offer, no inbox digest, no mid-task pickup, no delivery acks. Silently.
  *
  * `doctor` reported everything green while that was true, which is how it went
@@ -242,7 +224,7 @@ function hookTrustCheck(): DoctorCheck {
     /* treated as untrusted below */
   }
   // Codex keys trust on the hooks.json path plus the snake_case event name.
-  const events = ['session_start', 'user_prompt_submit', 'stop']
+  const events = ['session_start', 'user_prompt_submit', 'stop', 'session_end']
   const missing = events.filter((e) => !cfg.includes(`${hooksPath}:${e}`))
   if (missing.length === 0) {
     return { name: 'hook-trust', verdict: 'PASS', detail: 'Codex has trusted the AgentChat hooks' }
@@ -251,7 +233,7 @@ function hookTrustCheck(): DoctorCheck {
     name: 'hook-trust',
     verdict: 'WARN',
     detail:
-      `${missing.length}/3 hooks not trusted by Codex yet — run \`/hooks\` in Codex and approve them. ` +
+      `${missing.length}/4 hooks not trusted by Codex yet — run \`/hooks\` in Codex and approve them. ` +
       'Until then there is no inbox digest, no mid-task pickup and no delivery acks.',
   }
 }
