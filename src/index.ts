@@ -96,10 +96,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         const result = installCodex(handle)
         const { actions, warnings } = result
         let failed = !result.complete
+        let backgroundEnabled = false
         // Always-on is part of installing, not a later opt-in. It needs no
         // credentials: the daemon is resident and idles until one appears.
         if (result.complete) {
           const alwaysOn = ensureAlwaysOn()
+          backgroundEnabled = alwaysOn.ok
           if (alwaysOn.ok) actions.push('always-on service registered')
           else if (alwaysOn.detail === 'switched off by the user') {
             actions.push('always-on remains off (user choice)')
@@ -113,46 +115,57 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
           )
         }
         if (warnings.length > 0) failed = true
-        console.log(
-          result.complete
-            ? failed
+        if (failed) {
+          console.log(
+            result.complete
               ? `${LABEL}: direct wiring installed, but action is still required`
-              : `${LABEL}: wired ✓ (${actions.join(', ') || 'no changes'})`
-            : `${LABEL}: wiring incomplete`,
-        )
-        for (const w of warnings) console.log(`  ⚠ ${w}`)
-        if (failed) return 1
+              : `${LABEL}: wiring incomplete`,
+          )
+          for (const w of warnings) console.log(`  ⚠ ${w}`)
+          return 1
+        }
+
+        const hookTrust = await inspectHookTrust()
+        const hooksTrusted = hookTrust.verdict === 'PASS'
+        const status = [
+          'AgentChat for Codex',
+          '',
+          '  ✓ Integration installed',
+          backgroundEnabled
+            ? '  ✓ Background delivery enabled'
+            : '  – Background delivery disabled (your choice)',
+        ]
+        if (handle !== null) status.push(`  ✓ AgentChat account connected (@${handle})`)
+        if (hooksTrusted) status.push('  ✓ AgentChat hooks trusted')
+
+        const steps: string[] = []
+        steps.push('Open a new Codex session.')
+        if (!hooksTrusted) {
+          steps.push(
+            'Review and trust the four AgentChat hooks. Choose “Trust all and continue.”\n' +
+            '     If Codex does not show the review, open `/hooks`.',
+          )
+        }
+        if (handle === null) steps.push('Ask Codex: “Set up your AgentChat account.”')
+
+        if (handle !== null && hooksTrusted) {
+          // There is nothing left to set up. A fresh Codex session is useful
+          // after an install, but presenting it as unfinished work would tell
+          // an already-configured user to repeat a completed flow.
+          steps.length = 0
+        }
+        if (steps.length > 0) {
+          status.push('', 'Next steps:')
+          for (const [index, step] of steps.entries()) {
+            status.push(`  ${index + 1}. ${step}`)
+          }
+        }
+        console.log(status.join('\n'))
+        return 0
       } catch (err) {
         console.error(`${LABEL}: wiring failed — ${String(err)}`)
         return 1
       }
-      if (handle === null) {
-        console.log(
-          [
-            '',
-            `Last step — give ${LABEL} its @handle:`,
-            `  Open Codex and it will offer to set one up — or run:`,
-            `    ${invocation()} register --email <email> --handle <handle>`,
-          ].join('\n'),
-        )
-      } else {
-        console.log(`\nSigned in as @${handle}.`)
-      }
-      const hookTrust = await inspectHookTrust()
-      if (hookTrust.verdict === 'PASS') {
-        console.log('\nCodex hook consent: already approved ✓')
-      } else {
-        console.log(
-          [
-            '',
-            'One-time Codex security consent for in-session delivery:',
-            '  On the next Codex launch, approve the four AgentChat hooks if Codex offers its review.',
-            '  If Codex shows only a warning instead of the review screen, open `/hooks`.',
-            'Until approved, MCP messaging and always-on delivery still work.',
-          ].join('\n'),
-        )
-      }
-      return 0
     }
 
     case 'register':

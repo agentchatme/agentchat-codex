@@ -61,7 +61,7 @@ describe('installing writes a discovery block, with no identity and no hook', ()
     await run([])
     expect(fs.existsSync(agentsMd()), 'AGENTS.md should exist right after install').toBe(true)
     const md = fs.readFileSync(agentsMd(), 'utf-8')
-    expect(md).toContain('no handle yet')
+    expect(md).toContain('no account yet')
     expect(md).toMatch(/register --email/)
   })
 
@@ -70,10 +70,10 @@ describe('installing writes a discovery block, with no identity and no hook', ()
     expect(fs.readFileSync(agentsMd(), 'utf-8')).toContain('--not-now')
   })
 
-  it('explains the one-time Codex-owned consent and its /hooks fallback', async () => {
+  it('explains the one-time Codex-owned hook review and its /hooks fallback', async () => {
     const { out } = await run([])
-    expect(out).toMatch(/security consent/i)
-    expect(out).toMatch(/next Codex launch/i)
+    expect(out).toMatch(/review and trust the four AgentChat hooks/i)
+    expect(out).toContain('Trust all and continue')
     expect(out).toContain('/hooks')
   })
 })

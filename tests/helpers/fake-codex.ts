@@ -43,7 +43,7 @@ export function installFakeCodex(root: string, version = '0.146.0'): FakeCodex {
       "        if (!group || typeof group !== 'object' || !Array.isArray(group.hooks)) continue",
       '        for (const hook of group.hooks) {',
       "          if (!hook || typeof hook.command !== 'string') continue",
-      "          hooks.push({ eventName: eventNames[event] || event, command: hook.command, sourcePath: hooksPath, enabled: true, trustStatus: 'untrusted', currentHash: 'sha256:fake-current' })",
+      "          hooks.push({ eventName: eventNames[event] || event, command: hook.command, sourcePath: hooksPath, enabled: true, trustStatus: process.env.FAKE_CODEX_HOOK_TRUST || 'untrusted', currentHash: 'sha256:fake-current' })",
       '        }',
       '      }',
       '    }',

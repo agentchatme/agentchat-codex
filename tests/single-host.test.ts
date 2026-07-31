@@ -56,7 +56,10 @@ function snapshot(dir: string): Record<string, string> {
   return out
 }
 
-async function run(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+async function run(
+  args: string[],
+  extraEnv: Record<string, string> = {},
+): Promise<{ code: number; stdout: string; stderr: string }> {
   try {
     const { stdout, stderr } = await exec(process.execPath, [BIN, ...args], {
       env: {
@@ -70,6 +73,7 @@ async function run(args: string[]): Promise<{ code: number; stdout: string; stde
         AGENTCHAT_API_BASE: 'http://127.0.0.1:9',
         AGENTCHAT_LOG_LEVEL: 'silent',
         AGENTCHAT_SERVICE_DRY_RUN: '1',
+        ...extraEnv,
       },
     })
     return { code: 0, stdout, stderr }
@@ -87,10 +91,60 @@ describe('wiring Codex', () => {
     const out = await run([])
 
     expect(out.code).toBe(0)
-    expect(out.stdout).toContain('Codex: wired')
+    expect(out.stdout).toContain('AgentChat for Codex')
+    expect(out.stdout).toContain('✓ Integration installed')
+    expect(out.stdout).toContain('✓ Background delivery enabled')
+    expect(out.stdout).not.toContain('config.toml')
+    expect(out.stdout).not.toContain('bundle →')
+    expect(out.stdout).toContain('1. Open a new Codex session.')
+    expect(out.stdout).toContain('2. Review and trust the four AgentChat hooks.')
+    expect(out.stdout).toContain('Choose “Trust all and continue.”')
+    expect(out.stdout).toContain('/hooks')
+    expect(out.stdout).toContain('3. Ask Codex: “Set up your AgentChat account.”')
     expect(fs.existsSync(path.join(sandbox, '.codex', 'config.toml'))).toBe(true)
     expect(fs.existsSync(path.join(sandbox, '.codex', 'hooks.json'))).toBe(true)
     expect(snapshot(claudeDir())).toEqual(before)
+  })
+
+  it('omits hook approval when Codex reports the four hooks as trusted', async () => {
+    const out = await run([], { FAKE_CODEX_HOOK_TRUST: 'trusted' })
+
+    expect(out.code).toBe(0)
+    expect(out.stdout).toContain('✓ AgentChat hooks trusted')
+    expect(out.stdout).toContain('1. Open a new Codex session.')
+    expect(out.stdout).toContain('2. Ask Codex: “Set up your AgentChat account.”')
+    expect(out.stdout).not.toContain('Review and trust')
+    expect(out.stdout).not.toContain('/hooks')
+  })
+
+  it('does not ask Codex to create an account when one is already connected', async () => {
+    fs.mkdirSync(path.join(sandbox, '.codex', 'agentchat'), { recursive: true })
+    fs.writeFileSync(
+      path.join(sandbox, '.codex', 'agentchat', 'credentials'),
+      JSON.stringify({ api_key: 'ac_live_' + 'b'.repeat(40), handle: 'codex-agent' }),
+    )
+
+    const out = await run([])
+
+    expect(out.code).toBe(0)
+    expect(out.stdout).toContain('✓ AgentChat account connected (@codex-agent)')
+    expect(out.stdout).toContain('Review and trust the four AgentChat hooks.')
+    expect(out.stdout).not.toContain('Set up your AgentChat account')
+  })
+
+  it('shows no next steps when the account and hook trust are already configured', async () => {
+    fs.mkdirSync(path.join(sandbox, '.codex', 'agentchat'), { recursive: true })
+    fs.writeFileSync(
+      path.join(sandbox, '.codex', 'agentchat', 'credentials'),
+      JSON.stringify({ api_key: 'ac_live_' + 'c'.repeat(40), handle: 'codex-agent' }),
+    )
+
+    const out = await run([], { FAKE_CODEX_HOOK_TRUST: 'trusted' })
+
+    expect(out.code).toBe(0)
+    expect(out.stdout).toContain('✓ AgentChat account connected (@codex-agent)')
+    expect(out.stdout).toContain('✓ AgentChat hooks trusted')
+    expect(out.stdout).not.toContain('Next steps:')
   })
 
   it('honours CODEX_HOME rather than assuming ~/.codex', async () => {
@@ -152,7 +206,7 @@ describe('wiring Codex', () => {
     const upgraded = await run([])
 
     expect(upgraded.code).toBe(0)
-    expect(upgraded.stdout).toContain('always-on remains off (user choice)')
+    expect(upgraded.stdout).toContain('Background delivery disabled (your choice)')
     expect(
       fs.existsSync(path.join(sandbox, '.codex', 'agentchat', 'always-on.optout')),
     ).toBe(true)
