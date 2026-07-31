@@ -4,10 +4,12 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import {
   AGENTCHAT_MCP_PACKAGE,
+  CodexTurnEvents,
   buildCodexArgs,
   buildPrompt,
   loadCodexThreads,
   missingCodexThread,
+  turnIdempotencyKey,
 } from '../src/adapter.js'
 import type { TurnContext } from '@agentchatme/agent-core/daemon'
 
@@ -31,7 +33,7 @@ describe('Codex autonomous turn contract', () => {
     expect(args).not.toContain('--dangerously-bypass-hook-trust')
     expect(args.join(' ')).toContain(AGENTCHAT_MCP_PACKAGE)
     expect(args.join(' ')).not.toContain('enabled_tools')
-    expect(args.join(' ')).not.toContain('AGENTCHAT_TURN_')
+    expect(args.join(' ')).toContain('AGENTCHAT_TURN_IDEMPOTENCY_KEY')
     expect(args.join(' ')).not.toContain('AGENTCHAT_ALLOW_SENSITIVE_SENDS')
     expect(args.join(' ')).not.toContain('web_search="disabled"')
     expect(args.join(' ')).not.toContain('agents.enabled=false')
@@ -42,6 +44,85 @@ describe('Codex autonomous turn contract', () => {
     const args = buildCodexArgs(malicious, '/identity', '/scratch', 'thread_1')
     expect(args.slice(0, 3)).toEqual(['exec', 'resume', 'thread_1'])
     expect(args).not.toContain('-C')
+  })
+
+  it('derives one stable idempotency key from the frozen inbound batch', () => {
+    const batch = {
+      ...malicious,
+      pendingBatch: {
+        count: 2,
+        messageIds: ['msg_1', 'msg_2'],
+        oldestMessageId: 'msg_1',
+        newestMessageId: 'msg_2',
+        mentionedMessages: [],
+      },
+    }
+    expect(turnIdempotencyKey(batch, 'identity-a')).toBe(
+      turnIdempotencyKey(batch, 'identity-a'),
+    )
+    expect(turnIdempotencyKey(batch, 'identity-b')).not.toBe(
+      turnIdempotencyKey(batch, 'identity-a'),
+    )
+    expect(
+      turnIdempotencyKey(
+        {
+          ...batch,
+          pendingBatch: {
+            ...batch.pendingBatch,
+            messageIds: ['msg_1', 'msg_3'],
+          },
+        },
+        'identity-a',
+      ),
+    ).not.toBe(turnIdempotencyKey(batch, 'identity-a'))
+  })
+
+  it('requires a completed successful send event before treating a reply as sent', () => {
+    const events = new CodexTurnEvents()
+    events.consume({
+      type: 'item.started',
+      item: {
+        id: 'call_1',
+        type: 'mcp_tool_call',
+        server: 'agentchat',
+        tool: 'agentchat_send_message',
+        status: 'inProgress',
+      },
+    })
+    expect(events.outcome()).toMatchObject({ ok: false, sent: false })
+
+    events.consume({
+      type: 'item.completed',
+      item: {
+        id: 'call_1',
+        type: 'mcp_tool_call',
+        server: 'agentchat',
+        tool: 'agentchat_send_message',
+        status: 'completed',
+        result: { content: [{ type: 'text', text: '{"ok":true}' }] },
+      },
+    })
+    expect(events.outcome()).toEqual({ ok: true, sent: true })
+  })
+
+  it('rejects a failed AgentChat send even when Codex itself exits cleanly', () => {
+    const events = new CodexTurnEvents()
+    events.consume({
+      type: 'item.completed',
+      item: {
+        id: 'call_1',
+        type: 'mcp_tool_call',
+        server: 'agentchat',
+        tool: 'agentchat_send_message',
+        status: 'failed',
+        error: { message: 'MCP tool returned an error' },
+      },
+    })
+    expect(events.outcome()).toMatchObject({
+      ok: false,
+      sent: false,
+      detail: expect.stringContaining('failed'),
+    })
   })
 
   it('recognizes vanished saved-thread errors so a retry can start fresh', () => {

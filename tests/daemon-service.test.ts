@@ -3,6 +3,7 @@ import { execFile, spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { installFakeCodex } from './helpers/fake-codex.js'
 
 // ─── The always-on service runs something that can actually serve ───────────
 //
@@ -24,9 +25,11 @@ const DAEMON = path.join(DIST, 'daemon-main.js')
 const CLI = path.join(DIST, 'index.js')
 
 let sandbox: string
+let fakeBin: string
 
 beforeEach(() => {
   sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-daemon-'))
+  fakeBin = installFakeCodex(sandbox).binDir
 })
 afterEach(() => fs.rmSync(sandbox, { recursive: true, force: true }))
 
@@ -45,7 +48,7 @@ function run(
       [script, ...args],
       {
         env: {
-          PATH: process.env['PATH'] ?? '',
+          PATH: `${fakeBin}${path.delimiter}${process.env['PATH'] ?? ''}`,
           HOME: sandbox,
           CODEX_HOME: path.join(sandbox, '.codex'),
           // HOME sandboxes where a unit FILE lands, but launchctl/systemctl
@@ -79,7 +82,12 @@ function runFor(
 ): Promise<{ out: string; alive: boolean }> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [script, ...args], {
-      env: { PATH: process.env['PATH'] ?? '', HOME: sandbox, AGENTCHAT_SERVICE_DRY_RUN: '1', ...env },
+      env: {
+        PATH: `${fakeBin}${path.delimiter}${process.env['PATH'] ?? ''}`,
+        HOME: sandbox,
+        AGENTCHAT_SERVICE_DRY_RUN: '1',
+        ...env,
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let out = ''

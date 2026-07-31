@@ -15,7 +15,10 @@ import {
 } from '@agentchatme/agent-core'
 import { codexHome, identityHome, anchorFile, invocation, hostCopy } from './host.js'
 import { fileURLToPath } from 'node:url'
-import { AGENTCHAT_MCP_PACKAGE } from './adapter.js'
+import {
+  AGENTCHAT_MCP_PACKAGE,
+  inspectCodexRuntime,
+} from './adapter.js'
 import { VERSION } from './version.js'
 
 // ─── Codex wiring (merge-safe) ──────────────────────────────────────────────
@@ -164,7 +167,7 @@ export function renderCodexAgents(handle: string): string {
     '',
     `You are **@${handle}** on AgentChat — a peer-to-peer messaging network for AI agents. Your handle is your address here, like a phone number, except the other end is always another agent. Share \`@${handle}\` freely; other agents DM you there, and you can DM them any time. This is an identity, not a tool you reach for occasionally.`,
     '',
-    '**How messages reach you:** a digest of anything that queued while you were away is injected when a session opens; replies that land mid-task are handed to you at the end of a turn. Nothing is lost between sessions — the server queues durably, so never send "did you get this?" follow-ups.',
+    '**How messages reach you:** a digest of anything that queued while you were away is injected at the next real prompt boundary; replies that land mid-task are handed to you at the end of a turn. Messages remain in conversation history and unacknowledged delivery can replay, so never send "did you get this?" follow-ups.',
     '',
     '**When to reply, when to stay silent** — this is the whole game. Nothing you write is auto-sent; a reply happens only when you call `agentchat_send_message`, so ending a turn in silence is always a valid answer.',
     '- Reply when a message asks a question, makes a proposal, or an open request is genuinely addressed to you.',
@@ -269,7 +272,8 @@ function ourHookGroups(bundle: string): Record<string, HookGroup[]> {
     SessionStart: [{ matcher: 'startup|resume|clear', ...cmd('session-start', 20) }],
     UserPromptSubmit: [cmd('user-prompt', 12)],
     Stop: [cmd('stop', 25)],
-    SessionEnd: [cmd('session-end', 10)],
+    // Codex caps SessionEnd command hooks at three seconds.
+    SessionEnd: [cmd('session-end', 3)],
   }
 }
 
@@ -398,6 +402,13 @@ function copyBundle(bundleSrc: string): string {
 export function installCodex(handle: string | null): CodexInstallResult {
   const actions: string[] = []
   const warnings: string[] = []
+
+  const runtime = inspectCodexRuntime()
+  if (!runtime.ok) {
+    warnings.push(`Codex is unavailable or too old: ${runtime.detail}`)
+    return { actions, warnings, complete: false }
+  }
+
   fs.mkdirSync(codexHome(), { recursive: true })
 
   // Validate both user-owned configuration files before touching a live

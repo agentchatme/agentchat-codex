@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { installFakeCodex } from './helpers/fake-codex.js'
 
 // ─── A fresh install must be discoverable without a hook ────────────────────
 //
@@ -20,11 +21,13 @@ import * as path from 'node:path'
 const CLI = path.join(__dirname, '..', 'dist', 'index.js')
 
 let sandbox: string
+let fakeBin: string
 const codexHome = (): string => path.join(sandbox, '.codex')
 const agentsMd = (): string => path.join(codexHome(), 'AGENTS.md')
 
 beforeEach(() => {
   sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-discovery-'))
+  fakeBin = installFakeCodex(sandbox).binDir
 })
 afterEach(() => fs.rmSync(sandbox, { recursive: true, force: true }))
 
@@ -35,7 +38,7 @@ function run(args: string[]): Promise<{ code: number; out: string }> {
       [CLI, ...args],
       {
         env: {
-          PATH: process.env['PATH'] ?? '',
+          PATH: `${fakeBin}${path.delimiter}${process.env['PATH'] ?? ''}`,
           HOME: sandbox,
           CODEX_HOME: codexHome(),
           AGENTCHAT_SERVICE_DRY_RUN: '1',
@@ -67,8 +70,10 @@ describe('installing writes a discovery block, with no identity and no hook', ()
     expect(fs.readFileSync(agentsMd(), 'utf-8')).toContain('--not-now')
   })
 
-  it('names the /hooks approval step, since hooks are inert until then', async () => {
+  it('explains the one-time Codex-owned consent and its /hooks fallback', async () => {
     const { out } = await run([])
+    expect(out).toMatch(/security consent/i)
+    expect(out).toMatch(/next Codex launch/i)
     expect(out).toContain('/hooks')
   })
 })
@@ -138,11 +143,11 @@ describe('doctor reports whether Codex will actually run the hooks', () => {
     await run([])
     const { out } = await run(['doctor'])
     expect(out).toContain('hook-trust')
-    expect(out).toMatch(/not trusted/i)
+    expect(out).toMatch(/untrusted|not trusted/i)
     expect(out).toContain('/hooks')
   })
 
-  it('passes once config.toml records trust for all four events', async () => {
+  it('does not mistake stale or fabricated trust hashes for current approval', async () => {
     await run([])
     const hooksPath = path.join(codexHome(), 'hooks.json')
     const cfgPath = path.join(codexHome(), 'config.toml')
@@ -152,7 +157,8 @@ describe('doctor reports whether Codex will actually run the hooks', () => {
     fs.appendFileSync(cfgPath, trust)
 
     const { out } = await run(['doctor'])
-    expect(out).toMatch(/PASS hook-trust|hook-trust: Codex has trusted/)
+    expect(out).toContain('WARN hook-trust')
+    expect(out).toMatch(/untrusted|changed/i)
   })
 })
 

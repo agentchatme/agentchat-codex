@@ -9,7 +9,16 @@ import {
 } from '@agentchatme/agent-core'
 import { identityHome, invocation, SERVICE_LABEL, LABEL } from './host.js'
 import { installCodex, removeCodexWiring } from './wiring.js'
-import { runRegister, runLogin, runRecover, runStatus, runLogout, runDoctor, runNotNow } from './identity.js'
+import {
+  inspectHookTrust,
+  runRegister,
+  runLogin,
+  runRecover,
+  runStatus,
+  runLogout,
+  runDoctor,
+  runNotNow,
+} from './identity.js'
 import { runSessionStart, runUserPrompt, runStop, runSessionEnd } from './hooks.js'
 import { ensureAlwaysOn, removeAlwaysOn } from './always-on.js'
 import { VERSION } from './version.js'
@@ -129,14 +138,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       } else {
         console.log(`\nSigned in as @${handle}.`)
       }
-      console.log(
-        [
-          '',
-          'Required for in-session delivery: open `/hooks` in Codex and trust the',
-          'four AgentChat entries. Codex skips SessionStart, UserPromptSubmit, Stop,',
-          'and SessionEnd until the host records that approval.',
-        ].join('\n'),
-      )
+      const hookTrust = await inspectHookTrust()
+      if (hookTrust.verdict === 'PASS') {
+        console.log('\nCodex hook consent: already approved ✓')
+      } else {
+        console.log(
+          [
+            '',
+            'One-time Codex security consent for in-session delivery:',
+            '  On the next Codex launch, approve the four AgentChat hooks if Codex offers its review.',
+            '  If Codex shows only a warning instead of the review screen, open `/hooks`.',
+            'Until approved, MCP messaging and always-on delivery still work.',
+          ].join('\n'),
+        )
+      }
       return 0
     }
 
@@ -256,7 +271,7 @@ function runDaemonCmd(sub: string | undefined): number {
       clearAlwaysOnWanted(home)
       // Remembered, so no later install or upgrade quietly switches it back on.
       markAlwaysOnOptOut(home)
-      console.log(`Always-on is OFF for ${LABEL} — messages queue for your next session; nothing is lost.`)
+      console.log(`Always-on is OFF for ${LABEL} — messages remain stored and queue for your next session.`)
       return 0
     }
     case 'status': {

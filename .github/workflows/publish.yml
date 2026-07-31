@@ -74,6 +74,7 @@ jobs:
       # prepack scripts write to the same stdout, and npm's output shape differs
       # between the runner's npm and a contributor's. Untarring cannot drift.
       - name: the published tarball contains both bundles, and they run
+        id: pack
         run: |
           set -euo pipefail
           rm -rf /tmp/verify && mkdir -p /tmp/verify
@@ -143,5 +144,6 @@ jobs:
             echo "::error::daemon install did not place the durable daemon copy"; exit 1; }
           echo "daemon install works through the published bin ✓"
           cd "$GITHUB_WORKSPACE"
+          echo "tgz=/tmp/verify/$tgz" >> "$GITHUB_OUTPUT"
 
-      - run: npm publish --provenance --access public
+      - run: npm publish "${{ steps.pack.outputs.tgz }}" --ignore-scripts --provenance --access public

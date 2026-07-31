@@ -9,8 +9,9 @@ import * as path from 'node:path'
 // on the tag matching package.json — so a stale version.ts sails through and
 // every user is told the wrong number.
 //
-// Bumping is deliberately slow here (0.0.11 → 0.0.12: increment the last digit,
-// append a new one only when it reaches 9).
+// AgentChat release versions move append-only: add one digit to the current
+// patch component when a release is approved. The founder owns any
+// minor/major transition.
 
 const ROOT = path.join(__dirname, '..')
 const read = (rel: string): string => fs.readFileSync(path.join(ROOT, rel), 'utf-8')

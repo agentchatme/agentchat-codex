@@ -5,6 +5,7 @@ import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { installFakeCodex } from './helpers/fake-codex.js'
 
 const exec = promisify(execFile)
 const BIN = path.join(__dirname, '..', 'dist', 'index.js')
@@ -21,9 +22,11 @@ const BIN = path.join(__dirname, '..', 'dist', 'index.js')
 // are not fixed here — they are unwritable.
 
 let sandbox: string
+let fakeBin: string
 
 beforeEach(() => {
   sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-integration-'))
+  fakeBin = installFakeCodex(sandbox).binDir
   fs.mkdirSync(path.join(sandbox, '.codex'), { recursive: true })
   // A fully set-up Claude Code agent sharing the machine.
   fs.mkdirSync(path.join(sandbox, '.claude', 'agentchat'), { recursive: true })
@@ -58,6 +61,7 @@ async function run(args: string[]): Promise<{ code: number; stdout: string; stde
     const { stdout, stderr } = await exec(process.execPath, [BIN, ...args], {
       env: {
         ...process.env,
+        PATH: `${fakeBin}${path.delimiter}${process.env['PATH'] ?? ''}`,
         HOME: sandbox,
         USERPROFILE: sandbox,
         CODEX_HOME: path.join(sandbox, '.codex'),
@@ -92,7 +96,13 @@ describe('wiring Codex', () => {
   it('honours CODEX_HOME rather than assuming ~/.codex', async () => {
     const elsewhere = path.join(sandbox, 'relocated')
     await exec(process.execPath, [BIN], {
-      env: { ...process.env, HOME: sandbox, CODEX_HOME: elsewhere, AGENTCHAT_API_KEY: '' },
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}${path.delimiter}${process.env['PATH'] ?? ''}`,
+        HOME: sandbox,
+        CODEX_HOME: elsewhere,
+        AGENTCHAT_API_KEY: '',
+      },
     })
     expect(fs.existsSync(path.join(elsewhere, 'config.toml'))).toBe(true)
     // …and did NOT also write the default location.
