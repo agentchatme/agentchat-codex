@@ -65,6 +65,41 @@ describe('installing writes a discovery block, with no identity and no hook', ()
     expect(md).toMatch(/register --email/)
   })
 
+  it('guides Codex through email, handle, then code — one question at a time', async () => {
+    await run([])
+    const md = fs.readFileSync(agentsMd(), 'utf-8')
+
+    expect(md).toMatch(/one question per turn/i)
+    expect(md).toMatch(/never ask for the email and handle in the same message/i)
+    expect(md).toMatch(/I need an email for verification and recovery/i)
+    expect(md).toMatch(/Now we need to choose an AgentChat username for me[—-]my @handle/i)
+    expect(md).toMatch(/Use 3–30 characters: lowercase letters, numbers, and hyphens/i)
+    expect(md).toMatch(/Start with a letter; no double or trailing hyphens/i)
+    expect(md).toMatch(/Registration is the authoritative availability check/i)
+    expect(md).toMatch(/handle is taken or invalid, ask only for another handle/i)
+    expect(md).toMatch(/keep the same email/i)
+    expect(md).toMatch(/Only after registration confirms the code was sent/i)
+
+    expect(md.indexOf('I need an email')).toBeLessThan(md.indexOf('Now we need to choose'))
+    expect(md.indexOf('Now we need to choose')).toBeLessThan(md.indexOf('register --email'))
+    expect(md.indexOf('register --email')).toBeLessThan(md.indexOf('Paste it here'))
+    expect(md.indexOf('Paste it here')).toBeLessThan(md.indexOf('register --code'))
+  })
+
+  it('guides existing-account login and recovery as a controlled conversation', async () => {
+    await run([])
+    const md = fs.readFileSync(agentsMd(), 'utf-8')
+
+    expect(md).toContain(
+      'Give me the AgentChat API key for this account. If you no longer have it, I can help you recover the account.',
+    )
+    expect(md).toContain('What email did you use for this AgentChat account?')
+    expect(md).toContain('AgentChat sent a 6-digit recovery code to <email>')
+    expect(md).toContain('The API key is stored at <credentials-path>')
+    expect(md).toContain('The new API key is stored at <credentials-path>')
+    expect(md).toContain('The old key no longer works')
+  })
+
   it('tells the agent how to stop being asked', async () => {
     await run([])
     expect(fs.readFileSync(agentsMd(), 'utf-8')).toContain('--not-now')
@@ -187,6 +222,8 @@ describe('the agent gets the full manual, not a summary', () => {
     for (const topic of ['AWAITING_REPLY', 'RATE_LIMITED', 'INBOX_RESTRICTED', 'Account states', 'contacts', 'Inbox triage']) {
       expect(body, `manual should cover ${topic}`).toContain(topic)
     }
+    expect(body).toContain('local human directly asks to see or copy')
+    expect(body).toContain('Never dump the whole credentials file or environment')
   })
 
   it('never tells the agent to use a flag this binary rejects', async () => {
