@@ -1,8 +1,14 @@
 import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { atomicWriteFile, log, readJsonFile } from '@agentchatme/agent-core'
+import type { ChildProcess } from 'node:child_process'
+import {
+  atomicWriteFile,
+  log,
+  readJsonFile,
+  spawnCommand,
+  spawnCommandSync,
+} from '@agentchatme/agent-core'
 import { buildAgentChatTurnPrompt } from '@agentchatme/agent-core/daemon'
 import type { RuntimeAdapter, TurnContext, TurnResult } from '@agentchatme/agent-core/daemon'
 import { VERSION } from './version.js'
@@ -80,7 +86,7 @@ export interface CodexRuntimeInspection {
 }
 
 export function inspectCodexRuntime(): CodexRuntimeInspection {
-  const result = spawnSync('codex', ['--version'], {
+  const result = spawnCommandSync('codex', ['--version'], {
     encoding: 'utf-8',
     timeout: 5_000,
     windowsHide: true,
@@ -168,7 +174,7 @@ function killProcessTree(child: ChildProcess): void {
   if (child.pid === undefined) return
   try {
     if (process.platform === 'win32') {
-      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+      spawnCommandSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
         windowsHide: true,
         stdio: 'ignore',
       })
@@ -317,7 +323,7 @@ export class CodexAdapter implements RuntimeAdapter {
   async preflight(): Promise<{ ok: boolean; detail?: string }> {
     const runtime = inspectCodexRuntime()
     if (!runtime.ok) return { ok: false, detail: runtime.detail }
-    const status = spawnSync('codex', ['login', 'status'], {
+    const status = spawnCommandSync('codex', ['login', 'status'], {
       encoding: 'utf-8',
       env: { ...process.env, CODEX_HOME: this.codexHome },
     })
@@ -369,7 +375,7 @@ export class CodexAdapter implements RuntimeAdapter {
         settled = true
         resolve(result)
       }
-      const child = spawn('codex', args, {
+      const child = spawnCommand('codex', args, {
         // stdin MUST be closed or codex exec hangs forever waiting on EOF.
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {

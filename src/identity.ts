@@ -1,6 +1,5 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { spawn, spawnSync } from 'node:child_process'
 import {
   alwaysOnOptedOut,
   alwaysOnState,
@@ -14,6 +13,8 @@ import {
   serviceDefinitionCurrent,
   serviceInstalled,
   writeAnchor,
+  spawnCommand,
+  spawnCommandSync,
   type DoctorCheck,
   type DoctorOpts,
   type HostProfile,
@@ -81,7 +82,7 @@ function concise(value: string): string {
 }
 
 function runtimeChecks(): DoctorCheck[] {
-  const npx = spawnSync('npx', ['--version'], {
+  const npx = spawnCommandSync('npx', ['--version'], {
     encoding: 'utf-8',
     timeout: 5_000,
     windowsHide: true,
@@ -107,7 +108,7 @@ function runtimeChecks(): DoctorCheck[] {
     ]
   }
 
-  const auth = spawnSync('codex', ['login', 'status'], {
+  const auth = spawnCommandSync('codex', ['login', 'status'], {
     encoding: 'utf-8',
     timeout: 5_000,
     windowsHide: true,
@@ -330,7 +331,7 @@ export async function inspectHookTrust(): Promise<DoctorCheck> {
     let settled = false
     let stdout = ''
     let stderr = ''
-    const child = spawn('codex', ['app-server'], {
+    const child = spawnCommand('codex', ['app-server'], {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       env: { ...process.env, CODEX_HOME: codexHome() },
