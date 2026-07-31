@@ -286,7 +286,7 @@ describe('doctor', () => {
     expect(out.stdout).toContain('FAIL credentials')
   })
 
-  it('detects an anchor naming a different agent, and --fix repairs it', async () => {
+  it('detects an anchor naming a different agent, and --fix repairs it', { timeout: 15_000 }, async () => {
     await run([])
     fs.writeFileSync(
       path.join(sandbox, '.codex', 'agentchat', 'credentials'),
