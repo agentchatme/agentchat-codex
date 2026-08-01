@@ -11,8 +11,12 @@
 // A `null` from the engine means "no action": we print nothing and exit 0,
 // which the host treats as a no-op.
 
-export function sessionStartOutput(context: string): Record<string, unknown> {
+export function sessionStartOutput(
+  context: string,
+  notification: string | null = null,
+): Record<string, unknown> {
   return {
+    ...(notification === null ? {} : { systemMessage: notification }),
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
       additionalContext: context,
@@ -20,8 +24,12 @@ export function sessionStartOutput(context: string): Record<string, unknown> {
   }
 }
 
-export function userPromptOutput(context: string): Record<string, unknown> {
+export function userPromptOutput(
+  context: string,
+  notification: string | null = null,
+): Record<string, unknown> {
   return {
+    ...(notification === null ? {} : { systemMessage: notification }),
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
       additionalContext: context,
