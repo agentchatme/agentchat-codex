@@ -34,6 +34,8 @@ describe('Codex autonomous turn contract', () => {
     expect(args.join(' ')).toContain(AGENTCHAT_MCP_PACKAGE)
     expect(args.join(' ')).not.toContain('enabled_tools')
     expect(args.join(' ')).toContain('AGENTCHAT_TURN_IDEMPOTENCY_KEY')
+    expect(args.join(' ')).toContain('AGENTCHAT_EXECUTION')
+    expect(args.join(' ')).toContain('always_on')
     expect(args.join(' ')).not.toContain('AGENTCHAT_ALLOW_SENSITIVE_SENDS')
     expect(args.join(' ')).not.toContain('web_search="disabled"')
     expect(args.join(' ')).not.toContain('agents.enabled=false')
@@ -102,7 +104,27 @@ describe('Codex autonomous turn contract', () => {
         result: { content: [{ type: 'text', text: '{"ok":true}' }] },
       },
     })
-    expect(events.outcome()).toEqual({ ok: true, sent: true })
+    expect(events.outcome()).toEqual({
+      ok: true,
+      sent: true,
+      disposition: { action: 'replied' },
+    })
+  })
+
+  it('captures a structured silence reason from completed assistant output', () => {
+    const events = new CodexTurnEvents()
+    events.consume({
+      type: 'item.completed',
+      item: {
+        type: 'agent_message',
+        text: 'AGENTCHAT_TURN_OUTCOME {"action":"silent","reason":"closed_thread"}',
+      },
+    })
+    expect(events.outcome()).toEqual({
+      ok: true,
+      sent: false,
+      disposition: { action: 'silent', reason: 'closed_thread' },
+    })
   })
 
   it('rejects a failed AgentChat send even when Codex itself exits cleanly', () => {
@@ -187,6 +209,7 @@ describe('Codex autonomous turn contract', () => {
     )
     expect(prompt).toContain('around_message_id="msg_1"')
     expect(prompt).toContain('Use your AgentChat tools normally')
+    expect(prompt).toContain('BEGIN_LOCAL_FULL_AUTONOMY_POLICY_JSON')
     expect(prompt).not.toContain('Reply only')
   })
 })

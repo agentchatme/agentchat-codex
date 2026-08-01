@@ -9,8 +9,17 @@ import {
   spawnCommand,
   spawnCommandSync,
 } from '@agentchatme/agent-core'
-import { buildAgentChatTurnPrompt } from '@agentchatme/agent-core/daemon'
-import type { RuntimeAdapter, TurnContext, TurnResult } from '@agentchatme/agent-core/daemon'
+import {
+  buildAgentChatTurnPrompt,
+  parseAgentChatTurnOutcome,
+  resolveTurnDisposition,
+} from '@agentchatme/agent-core/daemon'
+import type {
+  RuntimeAdapter,
+  TurnContext,
+  TurnDisposition,
+  TurnResult,
+} from '@agentchatme/agent-core/daemon'
 import { VERSION } from './version.js'
 
 // ─── Codex adapter ──────────────────────────────────────────────────────────
@@ -133,6 +142,7 @@ function turnConfig(identityHome: string, idempotencyKey: string): string[] {
     AGENTCHAT_CLIENT_NAME: 'codex',
     AGENTCHAT_CLIENT_VERSION: VERSION,
     AGENTCHAT_TURN_IDEMPOTENCY_KEY: idempotencyKey,
+    AGENTCHAT_EXECUTION: 'always_on',
   }
   const config: Array<[string, string]> = [
     ['mcp_servers.agentchat.command', tomlString('npx')],
@@ -211,6 +221,7 @@ export class CodexTurnEvents {
   private anonymousPending = 0
   private successfulSends = 0
   private failure: string | null = null
+  private reportedDisposition: TurnDisposition | null = null
 
   consume(event: unknown): void {
     if (typeof event !== 'object' || event === null) return
@@ -225,6 +236,15 @@ export class CodexTurnEvents {
     const item = record['item']
     if (typeof item !== 'object' || item === null) return
     const tool = item as Record<string, unknown>
+    if (
+      record['type'] === 'item.completed' &&
+      tool['type'] === 'agent_message' &&
+      typeof tool['text'] === 'string'
+    ) {
+      this.reportedDisposition =
+        parseAgentChatTurnOutcome(tool['text']) ?? this.reportedDisposition
+      return
+    }
     if (
       tool['type'] !== 'mcp_tool_call' ||
       tool['server'] !== 'agentchat' ||
@@ -257,7 +277,12 @@ export class CodexTurnEvents {
     }
   }
 
-  outcome(): { ok: boolean; sent: boolean; detail?: string } {
+  outcome(): {
+    ok: boolean
+    sent: boolean
+    disposition?: TurnDisposition
+    detail?: string
+  } {
     if (this.failure !== null) {
       return { ok: false, sent: this.successfulSends > 0, detail: this.failure }
     }
@@ -269,7 +294,12 @@ export class CodexTurnEvents {
         detail: `${pending} AgentChat send tool call(s) never completed`,
       }
     }
-    return { ok: true, sent: this.successfulSends > 0 }
+    const sent = this.successfulSends > 0
+    return {
+      ok: true,
+      sent,
+      disposition: resolveTurnDisposition(sent, this.reportedDisposition),
+    }
   }
 }
 
@@ -382,6 +412,7 @@ export class CodexAdapter implements RuntimeAdapter {
           ...process.env,
           CODEX_HOME: this.codexHome,
           AGENTCHAT_LOG_LEVEL: 'silent',
+          AGENTCHAT_EXECUTION: 'always_on',
           // If Codex still discovers the integration's trusted user hooks,
           // they must not recursively drain the inbox inside the daemon turn.
           AGENTCHAT_HOOKS_ENABLED: '0',
@@ -449,7 +480,13 @@ export class CodexAdapter implements RuntimeAdapter {
             return
           }
           log.info(`codex turn done for ${ctx.conversationId} (sent=${outcome.sent})`)
-          finish({ ok: true, detail: outcome.sent ? 'replied' : 'silent' })
+          finish({
+            ok: true,
+            detail: outcome.sent ? 'replied' : 'silent',
+            ...(outcome.disposition
+              ? { disposition: outcome.disposition }
+              : {}),
+          })
         } else {
           const detail = `codex exited ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`
           finish({ ok: false, fatal: fatalRuntimeError(detail), detail })

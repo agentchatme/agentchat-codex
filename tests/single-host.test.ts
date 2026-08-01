@@ -359,6 +359,8 @@ describe('doctor', () => {
     expect(fixed.stdout).toContain('repaired → @codex-agent')
     const agents = fs.readFileSync(path.join(sandbox, '.codex', 'AGENTS.md'), 'utf-8')
     expect(agents).toContain('@codex-agent')
+    expect(agents).toContain('autonomy ...')
+    expect(agents).toContain('pending list')
     expect(agents).not.toContain('@claude-agent')
   })
 })

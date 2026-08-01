@@ -460,7 +460,15 @@ export function runNotNow(): number {
   return 0
 }
 
-export const { runRegister, runLogin, runRecover, runStatus, runLogout } = commands
+export const {
+  runRegister,
+  runLogin,
+  runRecover,
+  runStatus,
+  runAutonomy,
+  runPendingRequests,
+  runLogout,
+} = commands
 
 export async function runDoctor(opts: DoctorOpts = {}): Promise<number> {
   const base = await commands.runDoctor(opts)
