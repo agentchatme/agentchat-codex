@@ -14,7 +14,7 @@ export interface FakeCodex {
  *
  * Env knobs read by the fake at run time:
  *   FAKE_CODEX_LOGGED_OUT=1          `login status` exits 1
- *   FAKE_CODEX_RUN=ok|fail|nostart|hang   how an `exec` run ends (default ok)
+ *   FAKE_CODEX_RUN=ok|fail|nostart|signedout|hang   how an `exec` run ends (default ok)
  *   FAKE_CODEX_RECORD=<file>         where `exec` runs append their record
  */
 export function installFakeCodex(root: string, version = '0.154.0'): FakeCodex {
@@ -35,6 +35,7 @@ export function installFakeCodex(root: string, version = '0.154.0'): FakeCodex {
       "  if (process.env.FAKE_CODEX_RECORD) fs.appendFileSync(process.env.FAKE_CODEX_RECORD, JSON.stringify(record) + '\\n')",
       "  const mode = process.env.FAKE_CODEX_RUN || 'ok'",
       "  if (mode === 'nostart') process.exit(2)",
+      "  if (mode === 'signedout') { process.stderr.write('Not logged in. Run codex login.\\n'); process.exit(1) }",
       "  if (mode === 'fail') { process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 't1' }) + '\\n'); process.stderr.write('error: the fake runtime failed\\n'); process.exit(1) }",
       "  if (mode === 'hang') { process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 't1' }) + '\\n'); setInterval(() => {}, 1000); return }",
       "  process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 't1' }) + '\\n')",

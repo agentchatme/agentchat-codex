@@ -113,6 +113,9 @@ export class CodexRunner implements RunRunner {
       // stdin MUST be closed or codex exec waits for EOF forever.
       stdin: null,
       budgetMs: request.budgetMs,
+      // The doorbell stopping (shutdown, identity change, refused key)
+      // SIGTERMs this run's process group instead of orphaning it.
+      ...(request.signal ? { signal: request.signal } : {}),
     })
   }
 }

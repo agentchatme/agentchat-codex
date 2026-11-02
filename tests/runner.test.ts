@@ -146,6 +146,11 @@ describe('CodexRunner', () => {
     expect(failed.detail).toContain('the fake runtime failed')
     const nostart = await runner('answer', { FAKE_CODEX_RUN: 'nostart' }).start(request)
     expect(nostart).toMatchObject({ state: 'not_started', exitCode: 2 })
+
+    // README § Verify step 8: a signed-out Codex complains on stderr and exits — `run not_started`, complaint attached.
+    const signedOut = await runner('answer', { FAKE_CODEX_RUN: 'signedout' }).start(request)
+    expect(signedOut).toMatchObject({ state: 'not_started', exitCode: 1 })
+    expect(signedOut.detail).toMatch(/nothing on stdout: Not logged in/)
     const hang = await runner('answer', { FAKE_CODEX_RUN: 'hang' }).start({ ...request, budgetMs: 1_500 })
     expect(hang.state).toBe('timed_out')
   }, 40_000)

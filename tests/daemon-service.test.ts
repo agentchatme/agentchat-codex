@@ -68,8 +68,8 @@ describe('the daemon bundle ships in the tarball', () => {
   })
 
   it('is a different artifact from the CLI — the CLI must never carry the socket layer', () => {
-    expect(fs.readFileSync(DAEMON, 'utf-8')).toContain('doorbell socket ready')
-    expect(fs.readFileSync(CLI, 'utf-8')).not.toContain('doorbell socket ready')
+    expect(fs.readFileSync(DAEMON, 'utf-8')).toContain('doorbell socket hello.ok')
+    expect(fs.readFileSync(CLI, 'utf-8')).not.toContain('doorbell socket hello.ok')
   })
 })
 
