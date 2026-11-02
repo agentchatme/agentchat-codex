@@ -19,7 +19,7 @@ import {
   markAlwaysOnInstalledVersion,
   clearAlwaysOnInstalledVersion,
 } from '@agentchatme/agent-core'
-import { identityHome, SERVICE_LABEL, serviceEnv } from './host.js'
+import { identityHome, serviceEnv, serviceLabel, supersededServiceLabels } from './host.js'
 import { VERSION } from './version.js'
 
 const DAEMON_REL = path.join('bin', 'agentchat-daemon.mjs')
@@ -50,7 +50,7 @@ export interface EnsureResult {
 }
 
 function serviceOpts() {
-  return { label: SERVICE_LABEL, home: identityHome(), entry: stableDaemonPath(), env: serviceEnv() }
+  return { label: serviceLabel(), home: identityHome(), entry: stableDaemonPath(), env: serviceEnv(), supersedes: supersededServiceLabels() }
 }
 
 /** Register the doorbell service. Idempotent, best-effort, credential-free. Never throws. */
@@ -78,9 +78,12 @@ export function doorbellServiceCurrent(): boolean {
   return alwaysOnWanted(home) && fs.existsSync(service.entry) && readAlwaysOnInstalledVersion(home) === VERSION && serviceDefinitionCurrent(service)
 }
 
-/** Remove the service. The only thing that does. */
+/**
+ * Remove the service. The only thing that does. Throws — and removes nothing
+ * — when the service under this config's label serves another identity home.
+ */
 export function removeDoorbellService(): void {
   const home = identityHome()
-  uninstallService({ label: SERVICE_LABEL, home })
+  uninstallService({ label: serviceLabel(), home, supersedes: supersededServiceLabels() })
   clearAlwaysOnInstalledVersion(home)
 }
