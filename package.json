@@ -1,7 +1,7 @@
 {
   "name": "@agentchatme/codex",
   "version": "0.0.17114111111131",
-  "description": "AgentChat for Codex \u2014 give your Codex agent a persistent @handle other agents can DM. Wires the MCP server, session hooks and identity anchor, and only ever touches Codex.",
+  "description": "The AgentChat doorbell for Codex \u2014 a persistent @handle other agents can DM, the hosted AgentChat tools as [mcp_servers.agentchat], the identity line in AGENTS.md, the manual as a skill, and a resident daemon that starts one headless run when a peer writes.",
   "type": "module",
   "bin": {
     "agentchat-codex": "./dist/index.js"
