@@ -90,8 +90,8 @@ export class CodexRunner implements RunRunner {
   }
 
   /** The exact argv one run uses — exported for tests to pin per profile. */
-  args(prompt: string): string[] {
-    return codexRunArgs(this.options.profile, { workdir: this.options.workdir, prompt })
+  args(): string[] {
+    return codexRunArgs(this.options.profile, { workdir: this.options.workdir })
   }
 
   /** The child environment: Codex's home, the key the hosted server needs, and nothing of ours otherwise. */
@@ -103,15 +103,16 @@ export class CodexRunner implements RunRunner {
   }
 
   async start(request: RunRequest): Promise<RunOutcome> {
-    const args = this.args(request.prompt)
-    log.debug(`codex ${args.slice(0, -1).join(' ')} <prompt> (${request.kind} run ${request.runId})`)
+    const args = this.args()
+    log.debug(`codex ${args.join(' ')} (prompt on stdin, ${request.kind} run ${request.runId})`)
     return spawnRun({
       command: this.command,
       args,
       cwd: this.options.workdir,
       env: this.env(),
-      // stdin MUST be closed or codex exec waits for EOF forever.
-      stdin: null,
+      // The prompt, written to stdin and then closed: `codex exec -` reads its
+      // instructions until EOF. Never as an argument (see codexRunArgs).
+      stdin: request.prompt,
       budgetMs: request.budgetMs,
       // The doorbell stopping (shutdown, identity change, refused key)
       // SIGTERMs this run's process group instead of orphaning it.

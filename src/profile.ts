@@ -41,10 +41,19 @@ export function codexProfileArgs(profile: RunProfile): string[] {
 }
 
 /**
- * The full argument list for one headless run. The prompt is the positional
- * argument and stdin is closed at once: `codex exec` reads stdin when it is
- * piped, and hangs waiting for EOF when it is left open.
+ * The final positional argument: `-` tells `codex exec` to read its
+ * instructions from stdin (codex-rs/exec/src/cli.rs: "If not provided as an
+ * argument (or if `-` is used), instructions are read from stdin").
  */
-export function codexRunArgs(profile: RunProfile, options: { workdir: string; prompt: string }): string[] {
-  return ['exec', '--json', '--skip-git-repo-check', '--ephemeral', '-C', options.workdir, ...codexProfileArgs(profile), options.prompt]
+export const CODEX_PROMPT_FROM_STDIN = '-'
+
+/**
+ * The full argument list for one headless run. The prompt is NOT an argument:
+ * the runner writes it to stdin and closes it. An argument cannot carry it on
+ * Windows — npm installs codex as a `.cmd` shim, cross-spawn runs that through
+ * cmd.exe, and cmd.exe ends the command at the first line break, so every line
+ * after the first was silently dropped (caught by CI on windows-latest).
+ */
+export function codexRunArgs(profile: RunProfile, options: { workdir: string }): string[] {
+  return ['exec', '--json', '--skip-git-repo-check', '--ephemeral', '-C', options.workdir, ...codexProfileArgs(profile), CODEX_PROMPT_FROM_STDIN]
 }

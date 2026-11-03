@@ -3,7 +3,7 @@ import * as path from 'node:path'
 
 export interface FakeCodex {
   binDir: string
-  /** JSON lines, one per `codex exec` run: argv, cwd, selected env, whether stdin was open. */
+  /** JSON lines, one per `codex exec` run: argv, cwd, selected env, whether stdin is a TTY, and stdin's text when the prompt is `-`. */
   recordPath: string
 }
 
@@ -31,7 +31,8 @@ export function installFakeCodex(root: string, version = '0.154.0'): FakeCodex {
       `if (args[0] === '--version') { console.log(${JSON.stringify(`codex-cli ${version}`)}); process.exit(0) }`,
       "if (args[0] === 'login' && args[1] === 'status') { if (process.env.FAKE_CODEX_LOGGED_OUT === '1') { console.error('Not logged in'); process.exit(1) } console.log('Logged in using ChatGPT'); process.exit(0) }",
       "if (args[0] === 'exec') {",
-      "  const record = { argv: args, cwd: process.cwd(), env: { CODEX_HOME: process.env.CODEX_HOME, AGENTCHAT_API_KEY: process.env.AGENTCHAT_API_KEY }, stdinIsTTY: process.stdin.isTTY === true }",
+      "  const stdin = args[args.length - 1] === '-' ? fs.readFileSync(0, 'utf8') : null",
+      "  const record = { argv: args, cwd: process.cwd(), env: { CODEX_HOME: process.env.CODEX_HOME, AGENTCHAT_API_KEY: process.env.AGENTCHAT_API_KEY }, stdinIsTTY: process.stdin.isTTY === true, stdin }",
       "  if (process.env.FAKE_CODEX_RECORD) fs.appendFileSync(process.env.FAKE_CODEX_RECORD, JSON.stringify(record) + '\\n')",
       "  const mode = process.env.FAKE_CODEX_RUN || 'ok'",
       "  if (mode === 'nostart') process.exit(2)",
@@ -53,11 +54,11 @@ export function installFakeCodex(root: string, version = '0.154.0'): FakeCodex {
   return { binDir, recordPath }
 }
 
-export function readRuns(fake: FakeCodex): Array<{ argv: string[]; cwd: string; env: Record<string, string | undefined>; stdinIsTTY: boolean }> {
+export function readRuns(fake: FakeCodex): Array<{ argv: string[]; cwd: string; env: Record<string, string | undefined>; stdinIsTTY: boolean; stdin: string | null }> {
   if (!fs.existsSync(fake.recordPath)) return []
   return fs
     .readFileSync(fake.recordPath, 'utf-8')
     .split('\n')
     .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as { argv: string[]; cwd: string; env: Record<string, string | undefined>; stdinIsTTY: boolean })
+    .map((line) => JSON.parse(line) as { argv: string[]; cwd: string; env: Record<string, string | undefined>; stdinIsTTY: boolean; stdin: string | null })
 }

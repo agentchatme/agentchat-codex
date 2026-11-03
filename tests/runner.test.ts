@@ -39,7 +39,7 @@ const runner = (profile: 'answer' | 'work' | 'full', extra: Record<string, strin
 
 describe('the permission profiles, as codex exec flags', () => {
   it('answer: read-only sandbox, approvals never asked', () => {
-    expect(codexRunArgs('answer', { workdir: '/w', prompt: 'P' })).toEqual([
+    expect(codexRunArgs('answer', { workdir: '/w' })).toEqual([
       'exec',
       '--json',
       '--skip-git-repo-check',
@@ -50,12 +50,12 @@ describe('the permission profiles, as codex exec flags', () => {
       'read-only',
       '-c',
       'approval_policy="never"',
-      'P',
+      '-',
     ])
   })
 
   it('work: workspace-write sandbox, approvals never asked', () => {
-    expect(codexRunArgs('work', { workdir: '/w', prompt: 'P' })).toEqual([
+    expect(codexRunArgs('work', { workdir: '/w' })).toEqual([
       'exec',
       '--json',
       '--skip-git-repo-check',
@@ -66,12 +66,12 @@ describe('the permission profiles, as codex exec flags', () => {
       'workspace-write',
       '-c',
       'approval_policy="never"',
-      'P',
+      '-',
     ])
   })
 
   it('full: the runtime’s bypass', () => {
-    expect(codexRunArgs('full', { workdir: '/w', prompt: 'P' })).toEqual([
+    expect(codexRunArgs('full', { workdir: '/w' })).toEqual([
       'exec',
       '--json',
       '--skip-git-repo-check',
@@ -79,15 +79,15 @@ describe('the permission profiles, as codex exec flags', () => {
       '-C',
       '/w',
       '--dangerously-bypass-approvals-and-sandbox',
-      'P',
+      '-',
     ])
   })
 
   it('no profile hands the prompt a way to wait: every variant is approval-free', () => {
     for (const profile of ['answer', 'work', 'full'] as const) {
-      const args = codexRunArgs(profile, { workdir: '/w', prompt: 'P' })
+      const args = codexRunArgs(profile, { workdir: '/w' })
       expect(args.includes('approval_policy="never"') || args.includes('--dangerously-bypass-approvals-and-sandbox')).toBe(true)
-      expect(args[args.length - 1]).toBe('P')
+      expect(args[args.length - 1]).toBe('-')
     }
   })
 })
@@ -110,7 +110,7 @@ describe('CodexRunner', () => {
     expect(await runner('answer').preflight()).toMatchObject({ ok: false, detail: expect.stringMatching(/>= 0\.154\.0/) })
   })
 
-  it('a knock run: the server’s wake text as the prompt, the profile flags, the workdir, the key in the environment, stdin closed — output discarded', async () => {
+  it('a knock run: the server’s wake text as the prompt on stdin, the profile flags, the workdir, the key in the environment — output discarded', async () => {
     fs.mkdirSync(workdir, { recursive: true })
     const outcome = await runner('answer').start({ kind: 'knock', prompt: prompts.knock, runId: 'r1', budgetMs: 10_000 })
     expect(outcome).toMatchObject({ state: 'ok', exitCode: 0 })
@@ -119,8 +119,13 @@ describe('CodexRunner', () => {
     const runs = readRuns(fake)
     expect(runs).toHaveLength(1)
     const run = runs[0]!
-    expect(run.argv).toEqual(codexRunArgs('answer', { workdir, prompt: prompts.knock }))
-    const prompt = run.argv[run.argv.length - 1]!
+    expect(run.argv).toEqual(codexRunArgs('answer', { workdir }))
+    // The whole multi-line prompt arrives on stdin, byte for byte — on Windows
+    // an argument would be cut at the first line break by cmd.exe.
+    expect(run.stdin).toBe(prompts.knock)
+    expect(prompts.knock).toContain('\n')
+    expect(run.argv.join(' ')).not.toContain('woken by AgentChat')
+    const prompt = run.stdin!
     expect(prompt.startsWith(wakeInstruction(mcpToolNamer('agentchat')))).toBe(true)
     expect(prompt).toContain('mcp__agentchat__agentchat_inbox')
     expect(prompt).not.toMatch(/gate step/i)
@@ -134,7 +139,8 @@ describe('CodexRunner', () => {
     fs.mkdirSync(workdir, { recursive: true })
     await runner('work').start({ kind: 'invite', prompt: prompts.invite, runId: 'r2', budgetMs: 10_000 })
     const run = readRuns(fake)[0]!
-    expect(run.argv[run.argv.length - 1]).toBe(prompts.invite)
+    expect(run.stdin).toBe(prompts.invite)
+    expect(run.argv[run.argv.length - 1]).toBe('-')
     expect(run.argv).toContain('workspace-write')
   })
 
