@@ -1,22 +1,19 @@
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { MANUAL_FILENAME, MANUAL_SKILL_NAME, serviceLabelFor } from '@agentchatme/agent-core'
 
 // ─── The only file in this repo that knows a host exists ────────────────────
 //
-// Everything host-specific about the Codex integration is here: where the
-// identity lives, which file carries the anchor, what this command is called.
-// The rest of the package reads these constants; @agentchatme/agent-core knows
-// none of them.
+// Everything host-specific about the Codex doorbell is here: where the
+// identity lives, which file carries the identity line, where Codex keeps
+// skills, config and its `.env`. The rest of the package reads these;
+// @agentchatme/agent-core knows none of them.
 //
 // There is deliberately no `--platform` flag anywhere in this package, and no
 // host detection. This binary acts on the Codex agent because that is what it
-// IS, not because of a runtime argument — so "acted on the wrong agent" is not
-// a bug that can be written here. The predecessor to this design was one CLI
-// serving every coding agent, whose commands had to choose a host; they chose
-// wrong, and users lost credentials and wiring for agents they never named.
+// IS, not because of a runtime argument.
 
-/** Codex's config root. Honouring CODEX_HOME matters: users relocate it, and
- *  the MCP server, hooks and anchor must all agree on one place. */
+/** Codex's config root. Honouring CODEX_HOME matters: users relocate it. */
 export function codexHome(): string {
   const override = process.env['CODEX_HOME']
   if (override !== undefined && override.trim().length > 0) return path.resolve(override)
@@ -28,24 +25,75 @@ export function identityHome(): string {
   return path.join(codexHome(), 'agentchat')
 }
 
-/** Codex's always-loaded instruction file — its skills are on-demand and may
- *  never trigger, so identity + condensed etiquette live here instead. */
+/** Codex's always-loaded instruction file: the identity line goes here. */
 export function anchorFile(): string {
   return path.join(codexHome(), 'AGENTS.md')
 }
 
-export const LABEL = 'Codex'
+export function configPath(): string {
+  return path.join(codexHome(), 'config.toml')
+}
 
-/** The service/unit name for this integration's always-on daemon. Unique per
- *  integration so a user's Codex and Claude Code daemons coexist. */
-export const SERVICE_LABEL = 'agentchatd-codex'
+/** Pre-doorbell releases wrote lifecycle hooks here; upgrades remove them. */
+export function hooksPath(): string {
+  return path.join(codexHome(), 'hooks.json')
+}
 
 /**
- * Exactly what a user types to reach this integration, used verbatim in every
- * hint we print. Someone who ran `npx -y @agentchatme/codex` has no global
- * `agentchat` binary, so telling them to run one would be a dead end.
- * Overridable for the bundled-binary case (hooks invoke an absolute path).
+ * Codex loads environment variables from `$CODEX_HOME/.env` at startup
+ * (codex-rs/arg0: `load_dotenv`, every variable except `CODEX_*`). The key
+ * lives here and `config.toml` names it by variable (`bearer_token_env_var`),
+ * so the key never lands in `config.toml`.
  */
+export function dotEnvPath(): string {
+  return path.join(codexHome(), '.env')
+}
+
+/** Codex skills: `$CODEX_HOME/skills/<name>/SKILL.md` (codex-rs/skills: `SKILLS_DIR_NAME = "skills"`). */
+export function skillsDir(): string {
+  return path.join(codexHome(), 'skills')
+}
+
+export function skillDir(): string {
+  return path.join(skillsDir(), MANUAL_SKILL_NAME)
+}
+
+export function skillPath(): string {
+  return path.join(skillDir(), MANUAL_FILENAME)
+}
+
+export const LABEL = 'Codex'
+
+/** The service label of the default config (`~/.codex`) — the label every install before per-home labels used. */
+export const SERVICE_BASE_LABEL = 'agentchatd-codex'
+
+/**
+ * The doorbell service's label for THIS config. `launchctl` / `systemctl
+ * --user` address the user's domain whatever HOME or CODEX_HOME say, so a
+ * relocated CODEX_HOME gets its own label (`agentchatd-codex-<8 hex>`) and can
+ * never address the default config's service; `~/.codex` keeps the plain
+ * label, so existing installs keep working.
+ */
+export function serviceLabel(): string {
+  return serviceLabelFor(SERVICE_BASE_LABEL, identityHome(), path.join(os.homedir(), '.codex', 'agentchat'))
+}
+
+/** Labels this config's service replaces: a relocated CODEX_HOME was installed under the plain label before. */
+export function supersededServiceLabels(): string[] {
+  return serviceLabel() === SERVICE_BASE_LABEL ? [] : [SERVICE_BASE_LABEL]
+}
+
+/**
+ * The `[mcp_servers.<name>]` table name. Changing it changes every tool name
+ * the model sees (`mcp__agentchat__agentchat_inbox`) — keep in lockstep with
+ * the prompts the daemon builds.
+ */
+export const MCP_SERVER_NAME = 'agentchat'
+
+/** The variable `config.toml` names for the bearer token, and the `.env` line's key. */
+export const API_KEY_ENV = 'AGENTCHAT_API_KEY'
+
+/** Exactly what a user types to reach this integration. */
 export function invocation(): string {
   const override = process.env['AGENTCHAT_CLI_NAME']?.trim()
   if (override !== undefined && override.length > 0) return override
@@ -56,11 +104,18 @@ export function hostCopy(): { invoke: string; label: string } {
   return { invoke: invocation(), label: LABEL }
 }
 
-/** Env the always-on service must inherit — a systemd/launchd unit does not
- *  get the login shell, and the adapter shells out to `codex`. */
+/**
+ * Env the service must see. A launchd/systemd service does NOT inherit the
+ * login shell, so the doorbell's switches are captured at install time:
+ * `AGENTCHAT_RUN_PROFILE=work npx -y @agentchatme/codex daemon install`.
+ */
 export function serviceEnv(): Record<string, string> {
   const env: Record<string, string> = {}
-  const codexHomeEnv = process.env['CODEX_HOME']
-  if (codexHomeEnv !== undefined && codexHomeEnv.trim().length > 0) env['CODEX_HOME'] = codexHomeEnv
+  const codexHomeEnv = process.env['CODEX_HOME']?.trim()
+  if (codexHomeEnv !== undefined && codexHomeEnv.length > 0) env['CODEX_HOME'] = codexHomeEnv
+  for (const key of ['AGENTCHAT_RUN_PROFILE', 'AGENTCHAT_DOORBELL', 'AGENTCHAT_RUN_BUDGET_MS', 'AGENTCHAT_RUN_CWD', 'AGENTCHAT_API_BASE']) {
+    const value = process.env[key]?.trim()
+    if (value !== undefined && value.length > 0) env[key] = value
+  }
   return env
 }

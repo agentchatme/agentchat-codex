@@ -5,41 +5,31 @@ import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { installFakeCodex } from './helpers/fake-codex.js'
+import { MANUAL, IDENTITY_LINE_TEMPLATE } from '@agentchatme/agent-core'
+import { installFakeCodex, type FakeCodex } from './helpers/fake-codex.js'
 
 const exec = promisify(execFile)
 const BIN = path.join(__dirname, '..', 'dist', 'index.js')
 
-// ─── This binary can only act on Codex ──────────────────────────────────────
+// ─── Placement, through the CLI, against a fake Codex ───────────────────────
 //
-// The property is structural, not defensive. The host is a compile-time fact
-// of this package: there is no `--platform` option to parse, no host
-// detection, and no branch that could resolve a different agent's home.
-//
-// Its predecessor was one CLI serving every coding agent, whose commands had
-// to choose a host. They chose wrong: registering one agent rewrote another's
-// instruction file, and logout deleted both agents' credentials. Those bugs
-// are not fixed here — they are unwritable.
+// The host is a compile-time fact of this package: no `--platform`, no host
+// detection, no branch that could resolve another agent's home. A fully set-up
+// Claude Code agent shares the sandbox and must be byte-identical after every
+// command.
 
 let sandbox: string
-let fakeBin: string
+let fake: FakeCodex
+const KEY = 'ac_live_' + 'c'.repeat(40)
 
 beforeEach(() => {
   sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-integration-'))
-  fakeBin = installFakeCodex(sandbox).binDir
+  fake = installFakeCodex(sandbox)
   fs.mkdirSync(path.join(sandbox, '.codex'), { recursive: true })
-  // A fully set-up Claude Code agent sharing the machine.
   fs.mkdirSync(path.join(sandbox, '.claude', 'agentchat'), { recursive: true })
-  fs.writeFileSync(
-    path.join(sandbox, '.claude', 'agentchat', 'credentials'),
-    JSON.stringify({ api_key: 'ac_live_' + 'a'.repeat(40), handle: 'claude-agent' }),
-  )
-  fs.writeFileSync(
-    path.join(sandbox, '.claude', 'CLAUDE.md'),
-    '# My notes\n\n<!-- agentchat:start -->\nYou are **@claude-agent** on AgentChat.\n<!-- agentchat:end -->\n',
-  )
+  fs.writeFileSync(path.join(sandbox, '.claude', 'agentchat', 'credentials'), JSON.stringify({ api_key: 'ac_live_' + 'a'.repeat(40), handle: 'claude-agent' }))
+  fs.writeFileSync(path.join(sandbox, '.claude', 'CLAUDE.md'), '# My notes\n\n<!-- agentchat:start -->\nI am @claude-agent on AgentChat (api.agentchat.me).\n<!-- agentchat:end -->\n')
 })
-
 afterEach(() => fs.rmSync(sandbox, { recursive: true, force: true }))
 
 function snapshot(dir: string): Record<string, string> {
@@ -56,21 +46,17 @@ function snapshot(dir: string): Record<string, string> {
   return out
 }
 
-async function run(
-  args: string[],
-  extraEnv: Record<string, string> = {},
-): Promise<{ code: number; stdout: string; stderr: string }> {
+async function run(args: string[], extraEnv: Record<string, string> = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   try {
     const { stdout, stderr } = await exec(process.execPath, [BIN, ...args], {
       env: {
         ...process.env,
-        PATH: `${fakeBin}${path.delimiter}${process.env['PATH'] ?? ''}`,
+        PATH: `${fake.binDir}${path.delimiter}${process.env['PATH'] ?? ''}`,
         HOME: sandbox,
         USERPROFILE: sandbox,
         CODEX_HOME: path.join(sandbox, '.codex'),
         AGENTCHAT_API_KEY: '',
-        // Unroutable: nothing in these tests should reach the network.
-        AGENTCHAT_API_BASE: 'http://127.0.0.1:9',
+        AGENTCHAT_API_BASE: 'http://127.0.0.1:9', // unroutable: nothing here reaches the network
         AGENTCHAT_LOG_LEVEL: 'silent',
         AGENTCHAT_SERVICE_DRY_RUN: '1',
         ...extraEnv,
@@ -84,193 +70,151 @@ async function run(
 }
 
 const claudeDir = (): string => path.join(sandbox, '.claude')
+const codexDir = (): string => path.join(sandbox, '.codex')
+const home = (): string => path.join(codexDir(), 'agentchat')
+const creds = (): string => path.join(home(), 'credentials')
+const agentsMd = (): string => path.join(codexDir(), 'AGENTS.md')
+const configToml = (): string => path.join(codexDir(), 'config.toml')
+const dotEnv = (): string => path.join(codexDir(), '.env')
+const skill = (): string => path.join(codexDir(), 'skills', 'agentchat', 'SKILL.md')
 
-describe('wiring Codex', () => {
-  it('a bare invocation wires Codex and leaves Claude Code byte-identical', async () => {
-    const before = snapshot(claudeDir())
+const EXPECTED_BLOCK = [
+  '# agentchat:start',
+  '[mcp_servers.agentchat]',
+  'url = "http://127.0.0.1:9/mcp"',
+  'bearer_token_env_var = "AGENTCHAT_API_KEY"',
+  'startup_timeout_sec = 30',
+  '# Auto-run the AgentChat tools without a prompt, scoped to THIS server only.',
+  'default_tools_approval_mode = "approve"',
+  '# agentchat:end',
+].join('\n')
+
+function giveCodexAnIdentity(): void {
+  fs.mkdirSync(home(), { recursive: true })
+  fs.writeFileSync(creds(), JSON.stringify({ api_key: KEY, handle: 'codex-agent', api_base: 'http://127.0.0.1:9' }))
+}
+
+describe('install places the four texts', () => {
+  it('without an identity: the manual as a skill, the setup offer in AGENTS.md, no key, no MCP block, the service registered', async () => {
     const out = await run([])
-
-    expect(out.code).toBe(0)
-    expect(out.stdout).toContain('AgentChat for Codex')
-    expect(out.stdout).toContain('✓ Integration installed')
-    expect(out.stdout).toContain('✓ Background delivery enabled')
-    expect(out.stdout).not.toContain('config.toml')
-    expect(out.stdout).not.toContain('bundle →')
-    expect(out.stdout).toContain('1. Open a new Codex session.')
-    expect(out.stdout).toContain('2. Review and trust the four AgentChat hooks.')
-    expect(out.stdout).toContain('Choose “Trust all and continue.”')
-    expect(out.stdout).toContain('/hooks')
-    expect(out.stdout).toContain('3. Ask Codex: “Set up your AgentChat account.”')
-    expect(fs.existsSync(path.join(sandbox, '.codex', 'config.toml'))).toBe(true)
-    expect(fs.existsSync(path.join(sandbox, '.codex', 'hooks.json'))).toBe(true)
-    expect(snapshot(claudeDir())).toEqual(before)
+    expect(out.code, out.stdout + out.stderr).toBe(0)
+    expect(fs.readFileSync(skill(), 'utf-8')).toBe(MANUAL)
+    const md = fs.readFileSync(agentsMd(), 'utf-8')
+    expect(md).toContain('this agent has no account yet')
+    expect(md).toContain('register --email <email> --handle <handle>')
+    expect(fs.existsSync(dotEnv())).toBe(false)
+    expect(fs.existsSync(configToml())).toBe(false)
+    expect(fs.existsSync(path.join(home(), 'always-on.wanted'))).toBe(true)
+    expect(fs.existsSync(path.join(home(), 'bin', 'agentchat-daemon.mjs'))).toBe(true)
+    expect(out.stdout).toContain('Ask Codex: "Set up your AgentChat account."')
+    expect(snapshot(claudeDir())).toEqual(snapshot(claudeDir())) // sanity: helper is deterministic
   })
 
-  it('omits hook approval when Codex reports the four hooks as trusted', async () => {
-    const out = await run([], { FAKE_CODEX_HOOK_TRUST: 'trusted' })
-
-    expect(out.code).toBe(0)
-    expect(out.stdout).toContain('✓ AgentChat hooks trusted')
-    expect(out.stdout).toContain('1. Open a new Codex session.')
-    expect(out.stdout).toContain('2. Ask Codex: “Set up your AgentChat account.”')
-    expect(out.stdout).not.toContain('Review and trust')
-    expect(out.stdout).not.toContain('/hooks')
-  })
-
-  it('does not ask Codex to create an account when one is already connected', async () => {
-    fs.mkdirSync(path.join(sandbox, '.codex', 'agentchat'), { recursive: true })
-    fs.writeFileSync(
-      path.join(sandbox, '.codex', 'agentchat', 'credentials'),
-      JSON.stringify({ api_key: 'ac_live_' + 'b'.repeat(40), handle: 'codex-agent' }),
-    )
-
+  it('with an identity: the key in .env (0600), the MCP block in config.toml, the identity line, the skill', async () => {
+    giveCodexAnIdentity()
+    fs.writeFileSync(configToml(), '[model]\nname = "o4"\n')
     const out = await run([])
+    expect(out.code, out.stdout + out.stderr).toBe(0)
 
-    expect(out.code).toBe(0)
-    expect(out.stdout).toContain('✓ AgentChat account connected (@codex-agent)')
-    expect(out.stdout).toContain('Review and trust the four AgentChat hooks.')
-    expect(out.stdout).not.toContain('Set up your AgentChat account')
+    expect(fs.readFileSync(dotEnv(), 'utf-8')).toBe(`AGENTCHAT_API_KEY=${KEY}\n`)
+    if (process.platform !== 'win32') expect(fs.statSync(dotEnv()).mode & 0o777).toBe(0o600)
+    expect(fs.readFileSync(configToml(), 'utf-8')).toBe(`[model]\nname = "o4"\n\n${EXPECTED_BLOCK}\n`)
+    expect(fs.readFileSync(configToml(), 'utf-8')).not.toContain(KEY) // the key is never in config.toml
+    const md = fs.readFileSync(agentsMd(), 'utf-8')
+    expect(md).toContain(IDENTITY_LINE_TEMPLATE.split('<handle>').join('codex-agent'))
+    expect(md).not.toContain('no account yet')
+    expect(fs.readFileSync(skill(), 'utf-8')).toBe(MANUAL)
+    expect(out.stdout).toContain('Connected as @codex-agent')
+
+    // Re-running converges: no second block, no second line, exit 0.
+    const again = await run([])
+    expect(again.code, again.stdout).toBe(0)
+    expect(fs.readFileSync(configToml(), 'utf-8').split('# agentchat:start')).toHaveLength(2)
+    expect(fs.readFileSync(agentsMd(), 'utf-8').split('<!-- agentchat:start -->')).toHaveLength(2)
+    expect(fs.readFileSync(dotEnv(), 'utf-8')).toBe(`AGENTCHAT_API_KEY=${KEY}\n`)
   })
 
-  it('shows no next steps when the account and hook trust are already configured', async () => {
-    fs.mkdirSync(path.join(sandbox, '.codex', 'agentchat'), { recursive: true })
-    fs.writeFileSync(
-      path.join(sandbox, '.codex', 'agentchat', 'credentials'),
-      JSON.stringify({ api_key: 'ac_live_' + 'c'.repeat(40), handle: 'codex-agent' }),
-    )
-
-    const out = await run([], { FAKE_CODEX_HOOK_TRUST: 'trusted' })
-
-    expect(out.code).toBe(0)
-    expect(out.stdout).toContain('✓ AgentChat account connected (@codex-agent)')
-    expect(out.stdout).toContain('✓ AgentChat hooks trusted')
-    expect(out.stdout).not.toContain('Next steps:')
+  it('keeps the user’s own .env lines and config.toml content byte for byte', async () => {
+    giveCodexAnIdentity()
+    fs.writeFileSync(dotEnv(), 'OPENAI_API_KEY=user-secret\nOTHER=1\n')
+    fs.writeFileSync(configToml(), '# my config\nmodel = "o4"\n\n[mcp_servers.other]\ncommand = "other"\n')
+    expect((await run([])).code).toBe(0)
+    expect(fs.readFileSync(dotEnv(), 'utf-8')).toBe(`OPENAI_API_KEY=user-secret\nOTHER=1\nAGENTCHAT_API_KEY=${KEY}\n`)
+    expect(fs.readFileSync(configToml(), 'utf-8').startsWith('# my config\nmodel = "o4"\n\n[mcp_servers.other]\ncommand = "other"\n')).toBe(true)
   })
 
   it('honours CODEX_HOME rather than assuming ~/.codex', async () => {
-    const elsewhere = path.join(sandbox, 'relocated')
-    await exec(process.execPath, [BIN], {
-      env: {
-        ...process.env,
-        PATH: `${fakeBin}${path.delimiter}${process.env['PATH'] ?? ''}`,
-        HOME: sandbox,
-        CODEX_HOME: elsewhere,
-        AGENTCHAT_API_KEY: '',
-      },
-    })
-    expect(fs.existsSync(path.join(elsewhere, 'config.toml'))).toBe(true)
-    // …and did NOT also write the default location.
-    expect(fs.existsSync(path.join(sandbox, '.codex', 'config.toml'))).toBe(false)
+    const relocated = path.join(sandbox, 'relocated-codex')
+    fs.mkdirSync(path.join(relocated, 'agentchat'), { recursive: true })
+    fs.writeFileSync(path.join(relocated, 'agentchat', 'credentials'), JSON.stringify({ api_key: KEY, handle: 'moved-agent', api_base: 'http://127.0.0.1:9' }))
+    const out = await run([], { CODEX_HOME: relocated })
+    expect(out.code, out.stdout + out.stderr).toBe(0)
+    expect(fs.existsSync(path.join(relocated, 'skills', 'agentchat', 'SKILL.md'))).toBe(true)
+    expect(fs.readFileSync(path.join(relocated, 'AGENTS.md'), 'utf-8')).toContain('@moved-agent')
+    expect(fs.existsSync(path.join(relocated, '.env'))).toBe(true)
+    expect(fs.existsSync(path.join(relocated, 'config.toml'))).toBe(true)
+    expect(fs.existsSync(skill())).toBe(false)
   })
 
-  it('is idempotent — re-running converges instead of duplicating', async () => {
-    await run([])
-    const once = fs.readFileSync(path.join(sandbox, '.codex', 'config.toml'), 'utf-8')
-    await run([])
-    const twice = fs.readFileSync(path.join(sandbox, '.codex', 'config.toml'), 'utf-8')
-    expect(twice).toBe(once)
-    expect(twice.split('[mcp_servers.agentchat]')).toHaveLength(2) // exactly one block
-  })
-
-  it('preserves a user’s own config.toml content byte-for-byte', async () => {
-    const cfg = path.join(sandbox, '.codex', 'config.toml')
-    fs.writeFileSync(cfg, '[model]\nname = "o4"\n\n[mcp_servers.mine]\ncommand = "my-server"\n')
-    await run([])
-    const after = fs.readFileSync(cfg, 'utf-8')
-    expect(after).toContain('[model]')
-    expect(after).toContain('[mcp_servers.mine]')
-    expect(after).toContain('[mcp_servers.agentchat]')
-  })
-
-  it('refuses an unfenced MCP collision without leaving a partial integration', async () => {
-    const configPath = path.join(sandbox, '.codex', 'config.toml')
-    const original = '[mcp_servers.agentchat]\ncommand = "foreign-agentchat"\n'
-    fs.writeFileSync(configPath, original)
-
+  it('refuses a Codex older than the verified floor, placing nothing', async () => {
+    fake = installFakeCodex(sandbox, '0.146.0')
     const out = await run([])
-
     expect(out.code).toBe(1)
-    expect(out.stdout).toContain('wiring incomplete')
-    expect(out.stdout).toContain('left everything untouched')
-    expect(fs.readFileSync(configPath, 'utf-8')).toBe(original)
-    expect(fs.existsSync(path.join(sandbox, '.codex', 'hooks.json'))).toBe(false)
-    expect(
-      fs.existsSync(path.join(sandbox, '.codex', 'agentchat', 'bin', 'agentchat.mjs')),
-    ).toBe(false)
+    expect(out.stdout).toContain('requires Codex >= 0.154.0')
+    expect(fs.existsSync(skill())).toBe(false)
   })
 
-  it('does not undo an explicit always-on disable during an upgrade', async () => {
+  it('refuses an unfenced [mcp_servers.agentchat] it did not write', async () => {
+    giveCodexAnIdentity()
+    fs.writeFileSync(configToml(), '[mcp_servers.agentchat]\ncommand = "someone-else"\n')
+    const out = await run([])
+    expect(out.code).toBe(1)
+    expect(out.stdout).toContain('left untouched')
+    expect(fs.readFileSync(configToml(), 'utf-8')).toBe('[mcp_servers.agentchat]\ncommand = "someone-else"\n')
+  })
+
+  it('does not undo an explicit daemon disable during an upgrade', async () => {
     expect((await run([])).code).toBe(0)
     expect((await run(['daemon', 'disable'])).code).toBe(0)
-
     const upgraded = await run([])
-
-    expect(upgraded.code).toBe(0)
-    expect(upgraded.stdout).toContain('Background delivery disabled (your choice)')
-    expect(
-      fs.existsSync(path.join(sandbox, '.codex', 'agentchat', 'always-on.optout')),
-    ).toBe(true)
+    expect(upgraded.code, upgraded.stdout).toBe(0)
+    expect(upgraded.stdout).toContain('○ service: doorbell daemon off (your choice')
   })
+})
 
-  it('preserves a user hook placed beside ours during upgrade and uninstall', async () => {
-    const hooksPath = path.join(sandbox, '.codex', 'hooks.json')
-    const oldBundle = path.join(
-      sandbox,
-      '.codex',
-      'agentchat',
-      'bin',
-      'agentchat.mjs',
-    )
+describe('upgrading from the pre-doorbell release', () => {
+  it('replaces the old stdio block, removes the four hooks (keeping the user’s), the stable bundle and the old manual', async () => {
+    giveCodexAnIdentity()
+    const stable = path.join(home(), 'bin', 'agentchat.mjs')
+    fs.mkdirSync(path.dirname(stable), { recursive: true })
+    fs.writeFileSync(stable, '// old bundle')
+    fs.writeFileSync(path.join(home(), 'SKILL.md'), '# old rendered manual')
     fs.writeFileSync(
-      hooksPath,
+      configToml(),
+      ['[model]', 'name = "o4"', '', '# agentchat:start', '[mcp_servers.agentchat]', 'command = "npx"', 'args = ["-y", "@agentchatme/mcp@0.1.1121411"]', '[mcp_servers.agentchat.env]', `AGENTCHAT_HOME = "${home()}"`, '# agentchat:end', ''].join('\n'),
+    )
+    const ours = (sub: string) => ({ hooks: [{ type: 'command', command: `node "${stable}" hook ${sub}`, timeout: 20 }] })
+    fs.writeFileSync(
+      path.join(codexDir(), 'hooks.json'),
       JSON.stringify({
-        note: 'keep me',
         hooks: {
-          Stop: [
-            {
-              matcher: 'user-matcher',
-              hooks: [
-                {
-                  type: 'command',
-                  command: `node "${oldBundle}" hook stop`,
-                },
-                {
-                  type: 'command',
-                  command: '/usr/local/bin/co-located-user-hook',
-                },
-              ],
-            },
-          ],
+          SessionStart: [{ matcher: 'startup|resume|clear', ...ours('session-start') }],
+          UserPromptSubmit: [ours('user-prompt')],
+          Stop: [{ hooks: [{ type: 'command', command: '/usr/local/bin/user-hook' }, ...ours('stop').hooks] }],
+          SessionEnd: [ours('session-end')],
         },
       }),
     )
 
-    await run([])
-    const installed = JSON.parse(fs.readFileSync(hooksPath, 'utf-8')) as {
-      hooks: { Stop: Array<{ hooks: Array<{ command: string }> }> }
-    }
-    expect(
-      installed.hooks.Stop.flatMap((group) => group.hooks)
-        .filter((hook) => hook.command === '/usr/local/bin/co-located-user-hook'),
-    ).toHaveLength(1)
-
-    await run(['uninstall'])
-    expect(JSON.parse(fs.readFileSync(hooksPath, 'utf-8'))).toEqual({
-      note: 'keep me',
-      hooks: {
-        Stop: [
-          {
-            matcher: 'user-matcher',
-            hooks: [
-              {
-                type: 'command',
-                command: '/usr/local/bin/co-located-user-hook',
-              },
-            ],
-          },
-        ],
-      },
-    })
+    const out = await run([])
+    expect(out.code, out.stdout + out.stderr).toBe(0)
+    expect(out.stdout).toContain('lifecycle hooks removed')
+    expect(fs.readFileSync(configToml(), 'utf-8')).toBe(`[model]\nname = "o4"\n\n${EXPECTED_BLOCK}\n`)
+    const hooks = JSON.parse(fs.readFileSync(path.join(codexDir(), 'hooks.json'), 'utf-8')) as { hooks: Record<string, unknown> }
+    expect(hooks).toEqual({ hooks: { Stop: [{ hooks: [{ type: 'command', command: '/usr/local/bin/user-hook' }] }] } })
+    expect(fs.existsSync(stable)).toBe(false)
+    expect(fs.existsSync(path.join(home(), 'SKILL.md'))).toBe(false)
+    expect(fs.readFileSync(skill(), 'utf-8')).toBe(MANUAL)
   })
 })
 
@@ -281,93 +225,92 @@ describe('there is no way to address another agent', () => {
     expect(out.stderr).toContain("Unknown option '--platform'")
   })
 
-  it('logout signs out only this agent and keeps the integration installed', async () => {
-    await run([])
-    fs.writeFileSync(
-      path.join(sandbox, '.codex', 'agentchat', 'credentials'),
-      JSON.stringify({ api_key: 'ac_live_' + 'c'.repeat(40), handle: 'codex-agent' }),
-    )
+  it('logout removes the credential, the identity line and the key — and only for this agent', async () => {
+    giveCodexAnIdentity()
+    expect((await run([])).code).toBe(0)
     const before = snapshot(claudeDir())
-
     const out = await run(['logout'])
-
-    expect(out.code).toBe(0)
-    // Claude Code's credentials and anchor survive untouched…
+    expect(out.code, out.stdout + out.stderr).toBe(0)
     expect(snapshot(claudeDir())).toEqual(before)
-    expect(fs.existsSync(path.join(sandbox, '.claude', 'agentchat', 'credentials'))).toBe(true)
-    // …while this agent really is signed out.
-    expect(fs.existsSync(path.join(sandbox, '.codex', 'agentchat', 'credentials'))).toBe(false)
-    expect(fs.readFileSync(path.join(sandbox, '.codex', 'config.toml'), 'utf-8')).toContain(
-      '[mcp_servers.agentchat]',
-    )
-    expect(fs.existsSync(path.join(sandbox, '.codex', 'hooks.json'))).toBe(true)
+    expect(fs.existsSync(creds())).toBe(false)
+    expect(fs.existsSync(dotEnv())).toBe(false) // the only line was ours
+    expect(fs.readFileSync(configToml(), 'utf-8')).toContain('bearer_token_env_var') // the block is a template, it stays
+    const md = fs.readFileSync(agentsMd(), 'utf-8')
+    expect(md).not.toContain('@codex-agent')
+    expect(md).toContain('no account yet')
+    expect(fs.existsSync(skill())).toBe(true)
   })
 
-  it('uninstall removes Codex wiring but preserves the signed-in identity', async () => {
-    await run([])
-    const credentials = path.join(sandbox, '.codex', 'agentchat', 'credentials')
-    fs.writeFileSync(
-      credentials,
-      JSON.stringify({ api_key: 'ac_live_' + 'c'.repeat(40), handle: 'codex-agent' }),
-    )
-
+  it('uninstall removes the integration and preserves the identity file', async () => {
+    giveCodexAnIdentity()
+    fs.writeFileSync(configToml(), '[model]\nname = "o4"\n')
+    expect((await run([])).code).toBe(0)
+    const before = snapshot(claudeDir())
     const out = await run(['uninstall'])
-
-    expect(out.code).toBe(0)
-    expect(out.stdout).toContain('AgentChat identity was preserved')
-    expect(fs.existsSync(credentials)).toBe(true)
-    expect(fs.readFileSync(path.join(sandbox, '.codex', 'config.toml'), 'utf-8')).not.toContain(
-      '[mcp_servers.agentchat]',
-    )
-    expect(fs.existsSync(path.join(sandbox, '.codex', 'hooks.json'))).toBe(false)
-    expect(fs.existsSync(path.join(sandbox, '.codex', 'agentchat', 'bin', 'agentchat.mjs'))).toBe(
-      false,
-    )
+    expect(out.code, out.stdout + out.stderr).toBe(0)
+    expect(fs.existsSync(creds())).toBe(true)
+    expect(fs.existsSync(path.join(home(), 'always-on.optout'))).toBe(true)
+    expect(fs.existsSync(path.join(home(), 'bin', 'agentchat-daemon.mjs'))).toBe(false)
+    expect(fs.readFileSync(configToml(), 'utf-8')).toBe('[model]\nname = "o4"\n')
+    expect(fs.existsSync(dotEnv())).toBe(false)
+    expect(fs.existsSync(skill())).toBe(false)
+    expect(fs.readFileSync(agentsMd(), 'utf-8')).not.toContain('agentchat:start')
+    expect(snapshot(claudeDir())).toEqual(before)
   })
 
-  it('mentions the OTHER agent’s front door rather than offering to do it', async () => {
+  it('points at the OTHER agent’s front door rather than offering to do it', async () => {
     const out = await run(['--help'])
     expect(out.stdout).toContain('npx -y @agentchatme/claude-code')
     expect(out.stdout.toLowerCase()).toContain('separate agentchat agent')
   })
+
+  it('keeps the user’s own AGENTS.md content throughout', async () => {
+    fs.writeFileSync(agentsMd(), '# My notes\n')
+    giveCodexAnIdentity()
+    await run([])
+    await run(['logout'])
+    await run(['uninstall'])
+    expect(fs.readFileSync(agentsMd(), 'utf-8')).toBe('# My notes\n')
+  })
 })
 
 describe('doctor', () => {
-  it('reports wiring and the missing identity before registration', async () => {
+  it('reports the missing identity before registration, and the placement that exists', { timeout: 30_000 }, async () => {
     await run([])
     const out = await run(['doctor'])
-    expect(out.stdout).toContain('PASS wiring')
     expect(out.stdout).toContain('FAIL credentials')
+    expect(out.stdout).toContain('PASS skill')
+    expect(out.stdout).toContain('WARN hosted-mcp')
   })
 
-  it('detects an anchor naming a different agent, and --fix repairs it', { timeout: 15_000 }, async () => {
+  it('detects an identity line naming a different agent, and --fix repairs it', { timeout: 30_000 }, async () => {
+    giveCodexAnIdentity()
     await run([])
-    fs.writeFileSync(
-      path.join(sandbox, '.codex', 'agentchat', 'credentials'),
-      JSON.stringify({ api_key: 'ac_live_' + 'c'.repeat(40), handle: 'codex-agent' }),
-    )
-    // Exactly the corruption the old shared CLI produced.
-    fs.writeFileSync(
-      path.join(sandbox, '.codex', 'AGENTS.md'),
-      '<!-- agentchat:start -->\nYou are **@claude-agent** on AgentChat.\n<!-- agentchat:end -->\n',
-    )
-
+    fs.writeFileSync(agentsMd(), '<!-- agentchat:start -->\nI am @claude-agent on AgentChat (api.agentchat.me).\n<!-- agentchat:end -->\n')
+    const before = snapshot(claudeDir())
     const seen = await run(['doctor'])
     expect(seen.stdout).toContain('says @claude-agent but this agent is @codex-agent')
-
     const fixed = await run(['doctor', '--fix'])
     expect(fixed.stdout).toContain('repaired → @codex-agent')
-    const agents = fs.readFileSync(path.join(sandbox, '.codex', 'AGENTS.md'), 'utf-8')
-    expect(agents).toContain('@codex-agent')
-    expect(agents).toContain('autonomy ...')
-    expect(agents).toContain('pending list')
-    expect(agents).not.toContain('@claude-agent')
+    expect(fs.readFileSync(agentsMd(), 'utf-8')).toContain('I am @codex-agent on AgentChat')
+    expect(snapshot(claudeDir())).toEqual(before)
+  })
+
+  it('re-places the key when the credentials rotated', { timeout: 30_000 }, async () => {
+    giveCodexAnIdentity()
+    await run([])
+    const rotated = 'ac_live_' + 'r'.repeat(40)
+    fs.writeFileSync(creds(), JSON.stringify({ api_key: rotated, handle: 'codex-agent', api_base: 'http://127.0.0.1:9' }))
+    const seen = await run(['doctor'])
+    expect(seen.stdout).toContain('differs from this agent')
+    await run(['doctor', '--fix'])
+    expect(fs.readFileSync(dotEnv(), 'utf-8')).toBe(`AGENTCHAT_API_KEY=${rotated}\n`)
   })
 })
 
 describe('every hint is a runnable command', () => {
-  for (const argv of [[], ['--help'], ['status'], ['doctor'], ['logout']]) {
-    it(`\`${argv.join(' ') || '(bare)'}\` renders no un-interpolated placeholder`, async () => {
+  for (const argv of [[], ['--help'], ['status'], ['doctor'], ['logout'], ['daemon', 'status']]) {
+    it(`\`${argv.join(' ') || '(bare)'}\` renders no un-interpolated placeholder`, { timeout: 30_000 }, async () => {
       const out = await run(argv)
       expect(out.stdout + out.stderr).not.toContain('${')
     })
@@ -376,8 +319,13 @@ describe('every hint is a runnable command', () => {
 
 describe('the published bundle is self-contained', () => {
   it('has no external imports left to resolve', () => {
-    // Runs out of an npx cache with no guaranteed node_modules beside it.
     const bundle = fs.readFileSync(BIN, 'utf-8')
     expect(bundle).not.toMatch(/^import .* from ["'](agentchatme|@agentchatme\/|zod)/m)
+  })
+
+  it('reads no message content anywhere: the daemon carries no body parser', () => {
+    const bundle = fs.readFileSync(path.join(__dirname, '..', 'dist', 'daemon-main.js'), 'utf-8')
+    expect(bundle).not.toMatch(/messages\/sync/)
+    expect(bundle).not.toMatch(/type:\s*['"]ack['"]/)
   })
 })

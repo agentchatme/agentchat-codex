@@ -1,0 +1,520 @@
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import {
+  MANUAL,
+  MANUAL_URL,
+  atomicWriteFile,
+  hostedMcpUrl,
+  log,
+  offerDeclined,
+  readAnchorHandleAt,
+  anchorIsCurrentAt,
+  removeAnchorAt,
+  renderAnchorBlock,
+  renderDeclinedBlock,
+  renderUnregisteredBlock,
+  writeAnchor,
+} from '@agentchatme/agent-core'
+import { API_KEY_ENV, MCP_SERVER_NAME, anchorFile, configPath, dotEnvPath, hooksPath, hostCopy, identityHome, skillDir, skillPath } from './host.js'
+
+// ─── Placement: the four texts, where Codex loads them ──────────────────────
+//
+// 1. **The key** — `AGENTCHAT_API_KEY=<key>` in `$CODEX_HOME/.env` (mode 0600).
+//    Codex loads that file at startup (codex-rs/arg0 `load_dotenv`; only
+//    `CODEX_*` names are refused), so the variable exists in every Codex
+//    process without touching the user's shell.
+// 2. **The tools** — `[mcp_servers.agentchat]` in `$CODEX_HOME/config.toml`:
+//    `url = "https://api.agentchat.me/mcp"` and
+//    `bearer_token_env_var = "AGENTCHAT_API_KEY"` (the streamable-HTTP transport
+//    fields in codex-rs/config/src/mcp_types.rs; the same two things
+//    `codex mcp add <name> --url <url> --bearer-token-env-var <var>` writes).
+//    Written as a fenced block (`# agentchat:start` / `# agentchat:end`) so an
+//    upgrade replaces it and uninstall strips it, byte-preserving outside the
+//    fence; a hand-written `[mcp_servers.agentchat]` outside the fence is never
+//    touched.
+// 3. **The identity line** — the manual's anchor text, fenced, in
+//    `$CODEX_HOME/AGENTS.md` (loaded into every Codex session).
+// 4. **The manual** — `https://agentchat.me/skill.md` verbatim as the skill
+//    `$CODEX_HOME/skills/agentchat/SKILL.md` (codex-rs/skills: `CODEX_HOME/skills`,
+//    `SKILL.md`), loaded on demand.
+//
+// Legacy cleanup on upgrade: the four lifecycle hooks the previous release wrote
+// into `hooks.json`, the stable CLI bundle under the identity home, and the old
+// on-disk manual at `<home>/SKILL.md`. Receiving no longer needs hooks.
+
+export type PlacementStatus = 'ok' | 'changed' | 'skipped' | 'failed'
+
+export interface PlacementStep {
+  readonly name: 'key' | 'mcp' | 'identity' | 'skill' | 'legacy'
+  readonly status: PlacementStatus
+  readonly detail: string
+}
+
+export interface PlacementIdentity {
+  readonly handle: string
+  readonly apiKey: string
+  readonly apiBase: string
+}
+
+export const TOML_START = '# agentchat:start'
+export const TOML_END = '# agentchat:end'
+const LEGACY_BUNDLE = path.join('bin', 'agentchat.mjs')
+const LEGACY_MANUAL = 'SKILL.md'
+
+// ─── the key: $CODEX_HOME/.env ──────────────────────────────────────────────
+
+function lineSetsVariable(line: string, name: string): boolean {
+  const trimmed = line.trim()
+  if (trimmed.startsWith('#')) return false
+  const body = trimmed.startsWith('export ') ? trimmed.slice('export '.length).trim() : trimmed
+  return body.startsWith(`${name}=`)
+}
+
+/** Upsert one `NAME=value` line; every other line is kept byte for byte. Pure. */
+export function upsertDotEnvLine(content: string, name: string, value: string): string {
+  const line = `${name}=${value}`
+  const lines = content.length > 0 ? content.split(/\r?\n/) : []
+  let replaced = false
+  const out = lines.map((existing) => {
+    if (!replaced && lineSetsVariable(existing, name)) {
+      replaced = true
+      return line
+    }
+    return existing
+  })
+  if (!replaced) {
+    if (out.length > 0 && out[out.length - 1] === '') out.splice(out.length - 1, 0, line)
+    else out.push(line)
+  }
+  let next = out.join('\n')
+  if (!next.endsWith('\n')) next += '\n'
+  return next
+}
+
+export function removeDotEnvLine(content: string, name: string): string {
+  const next = content.split(/\r?\n/).filter((line) => !lineSetsVariable(line, name))
+  return next.join('\n')
+}
+
+function stripQuotes(value: string): string {
+  if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) return value.slice(1, -1)
+  return value
+}
+
+/** The value `.env` holds for the key, if any. */
+export function readKeyFromDotEnv(): string | undefined {
+  try {
+    for (const line of fs.readFileSync(dotEnvPath(), 'utf-8').split(/\r?\n/)) {
+      if (!lineSetsVariable(line, API_KEY_ENV)) continue
+      return stripQuotes(line.slice(line.indexOf('=') + 1).trim()) || undefined
+    }
+  } catch {
+    /* absent */
+  }
+  return undefined
+}
+
+export function placeKey(apiKey: string): PlacementStep {
+  const trimmed = apiKey.trim()
+  if (!trimmed || /[\r\n#"'\s]/.test(trimmed)) return { name: 'key', status: 'failed', detail: 'the key is empty or contains characters a .env line cannot carry' }
+  try {
+    const file = dotEnvPath()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : ''
+    const next = upsertDotEnvLine(existing, API_KEY_ENV, trimmed)
+    if (next === existing) {
+      try {
+        fs.chmodSync(file, 0o600)
+      } catch {
+        /* best effort */
+      }
+      return { name: 'key', status: 'ok', detail: `${API_KEY_ENV} in ${file}` }
+    }
+    atomicWriteFile(file, next, 0o600)
+    return { name: 'key', status: 'changed', detail: `${API_KEY_ENV} in ${file} (Codex loads it at startup; a running Codex picks it up on its next start)` }
+  } catch (err) {
+    return { name: 'key', status: 'failed', detail: `could not write ${API_KEY_ENV} to ${dotEnvPath()}: ${String(err)}` }
+  }
+}
+
+export function removeKey(): PlacementStep {
+  const file = dotEnvPath()
+  try {
+    if (!fs.existsSync(file)) return { name: 'key', status: 'ok', detail: `no ${API_KEY_ENV} to remove` }
+    const existing = fs.readFileSync(file, 'utf-8')
+    const next = removeDotEnvLine(existing, API_KEY_ENV)
+    if (next === existing) return { name: 'key', status: 'ok', detail: `no ${API_KEY_ENV} in ${file}` }
+    if (next.trim().length === 0) fs.rmSync(file, { force: true })
+    else atomicWriteFile(file, next, 0o600)
+    return { name: 'key', status: 'changed', detail: `${API_KEY_ENV} removed from ${file}` }
+  } catch (err) {
+    return { name: 'key', status: 'failed', detail: `could not update ${file}: ${String(err)}` }
+  }
+}
+
+// ─── the tools: [mcp_servers.agentchat] in config.toml ──────────────────────
+
+export function mcpBlock(apiBase: string): string {
+  return [
+    TOML_START,
+    `[mcp_servers.${MCP_SERVER_NAME}]`,
+    `url = "${hostedMcpUrl(apiBase)}"`,
+    `bearer_token_env_var = "${API_KEY_ENV}"`,
+    'startup_timeout_sec = 30',
+    '# Auto-run the AgentChat tools without a prompt, scoped to THIS server only.',
+    'default_tools_approval_mode = "approve"',
+    TOML_END,
+  ].join('\n')
+}
+
+export function upsertTomlBlock(existing: string, block: string): string {
+  const cleaned = stripTomlBlock(existing)
+  const trimmed = cleaned.replace(/\n+$/, '')
+  if (trimmed.length === 0) return block + '\n'
+  return trimmed + '\n\n' + block + '\n'
+}
+
+export function stripTomlBlock(existing: string): string {
+  const startIdx = existing.indexOf(TOML_START)
+  const endIdx = existing.indexOf(TOML_END)
+  if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) return existing
+  const before = existing.slice(0, startIdx).replace(/\n+$/, '')
+  const after = existing.slice(endIdx + TOML_END.length).replace(/^\n+/, '')
+  if (before.length === 0 && after.length === 0) return ''
+  if (before.length === 0) return after.endsWith('\n') ? after : after + '\n'
+  if (after.length === 0) return before + '\n'
+  return before + '\n\n' + after + (after.endsWith('\n') ? '' : '\n')
+}
+
+/** A hand-written `[mcp_servers.agentchat]` outside our fence would collide (duplicate TOML table). */
+export function hasUnfencedAgentchatServer(existing: string): boolean {
+  return new RegExp(`^\\s*\\[mcp_servers\\.${MCP_SERVER_NAME}\\]`, 'm').test(stripTomlBlock(existing))
+}
+
+export type McpBlockState = 'current' | 'stale' | 'missing' | 'foreign'
+
+export function inspectMcpBlock(apiBase: string): McpBlockState {
+  let config = ''
+  try {
+    config = fs.readFileSync(configPath(), 'utf-8')
+  } catch {
+    return 'missing'
+  }
+  if (hasUnfencedAgentchatServer(config)) return 'foreign'
+  if (config.includes(mcpBlock(apiBase))) return 'current'
+  return config.includes(TOML_START) ? 'stale' : 'missing'
+}
+
+export function placeMcp(apiBase: string): PlacementStep {
+  const file = configPath()
+  const state = inspectMcpBlock(apiBase)
+  if (state === 'foreign') {
+    return { name: 'mcp', status: 'skipped', detail: `${file} already defines [mcp_servers.${MCP_SERVER_NAME}] outside the agentchat block — left untouched; remove it and re-run if it is not yours` }
+  }
+  if (state === 'current') return { name: 'mcp', status: 'ok', detail: `[mcp_servers.${MCP_SERVER_NAME}] → ${hostedMcpUrl(apiBase)} (bearer token from ${API_KEY_ENV}) in ${file}` }
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : ''
+    let mode = 0o600
+    try {
+      mode = fs.statSync(file).mode & 0o777
+    } catch {
+      /* new file: private */
+    }
+    atomicWriteFile(file, upsertTomlBlock(existing, mcpBlock(apiBase)), mode)
+    return {
+      name: 'mcp',
+      status: 'changed',
+      detail: `[mcp_servers.${MCP_SERVER_NAME}] → ${hostedMcpUrl(apiBase)} (bearer token from ${API_KEY_ENV}) in ${file}${state === 'stale' ? ' (the previous entry was replaced)' : ''}`,
+    }
+  } catch (err) {
+    return { name: 'mcp', status: 'failed', detail: `could not write ${file}: ${String(err)}` }
+  }
+}
+
+export function removeMcp(): PlacementStep {
+  const file = configPath()
+  try {
+    if (!fs.existsSync(file)) return { name: 'mcp', status: 'ok', detail: 'no config.toml' }
+    const existing = fs.readFileSync(file, 'utf-8')
+    const next = stripTomlBlock(existing)
+    if (next === existing) return { name: 'mcp', status: 'ok', detail: `no agentchat block in ${file}` }
+    const mode = fs.statSync(file).mode & 0o777
+    atomicWriteFile(file, next, mode)
+    return { name: 'mcp', status: 'changed', detail: `[mcp_servers.${MCP_SERVER_NAME}] removed from ${file}` }
+  } catch (err) {
+    return { name: 'mcp', status: 'failed', detail: `could not update ${file}: ${String(err)}` }
+  }
+}
+
+// ─── the manual, as the agentchat skill ─────────────────────────────────────
+
+export function skillIsCurrent(): boolean {
+  try {
+    return fs.readFileSync(skillPath(), 'utf-8') === MANUAL
+  } catch {
+    return false
+  }
+}
+
+export function placeSkill(): PlacementStep {
+  try {
+    const current = skillIsCurrent()
+    if (!current) {
+      fs.mkdirSync(skillDir(), { recursive: true })
+      atomicWriteFile(skillPath(), MANUAL, 0o644)
+    }
+    const legacy = path.join(identityHome(), LEGACY_MANUAL)
+    let removedLegacy = false
+    if (fs.existsSync(legacy)) {
+      fs.rmSync(legacy, { force: true })
+      removedLegacy = true
+    }
+    return {
+      name: 'skill',
+      status: current && !removedLegacy ? 'ok' : 'changed',
+      detail: `manual (${MANUAL_URL}, verbatim) as the agentchat skill at ${skillPath()}${removedLegacy ? ' (old on-disk manual removed)' : ''}`,
+    }
+  } catch (err) {
+    return { name: 'skill', status: 'failed', detail: `could not write the manual to ${skillPath()}: ${String(err)}` }
+  }
+}
+
+export function removeSkill(): PlacementStep {
+  try {
+    let removed = false
+    if (fs.existsSync(skillPath())) {
+      fs.rmSync(skillDir(), { recursive: true, force: true })
+      removed = true
+    }
+    const legacy = path.join(identityHome(), LEGACY_MANUAL)
+    if (fs.existsSync(legacy)) {
+      fs.rmSync(legacy, { force: true })
+      removed = true
+    }
+    return { name: 'skill', status: removed ? 'changed' : 'ok', detail: removed ? 'agentchat skill removed' : 'no agentchat skill to remove' }
+  } catch (err) {
+    return { name: 'skill', status: 'failed', detail: `could not remove the agentchat skill: ${String(err)}` }
+  }
+}
+
+// ─── the identity line ──────────────────────────────────────────────────────
+
+export function placeIdentityLine(handle: string): PlacementStep {
+  try {
+    const current = anchorIsCurrentAt(anchorFile(), handle)
+    if (!current) writeAnchor(anchorFile(), renderAnchorBlock(handle), handle)
+    return { name: 'identity', status: current ? 'ok' : 'changed', detail: `identity line for @${handle} in ${anchorFile()}` }
+  } catch (err) {
+    return { name: 'identity', status: 'failed', detail: `could not write the identity line to ${anchorFile()}: ${String(err)}` }
+  }
+}
+
+/** No identity yet: the wizard's offer (or the silent variant after --not-now). */
+export function placeOffer(): PlacementStep {
+  try {
+    const declined = offerDeclined(identityHome())
+    writeAnchor(anchorFile(), declined ? renderDeclinedBlock(hostCopy()) : renderUnregisteredBlock(hostCopy()))
+    return { name: 'identity', status: 'changed', detail: declined ? `${path.basename(anchorFile())}: AgentChat present, not asking` : `${path.basename(anchorFile())}: setup offer (no account yet)` }
+  } catch (err) {
+    return { name: 'identity', status: 'failed', detail: `could not write ${anchorFile()}: ${String(err)}` }
+  }
+}
+
+// ─── legacy wiring from the pre-doorbell releases ───────────────────────────
+
+interface HookLeaf {
+  command?: unknown
+}
+interface HookGroup {
+  hooks?: HookLeaf[]
+  [key: string]: unknown
+}
+
+function leafIsOurs(leaf: HookLeaf): boolean {
+  return typeof leaf.command === 'string' && leaf.command.replace(/\\/g, '/').includes('agentchat/bin/agentchat.mjs')
+}
+
+/** Remove only our hook leaves; a user's co-located hooks stay. Pure. */
+export function withoutLegacyHooks(doc: Record<string, unknown>): { doc: Record<string, unknown>; removed: number } {
+  const hooks = doc['hooks']
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return { doc, removed: 0 }
+  let removed = 0
+  const nextHooks: Record<string, unknown> = {}
+  for (const [event, groups] of Object.entries(hooks as Record<string, unknown>)) {
+    if (!Array.isArray(groups)) {
+      nextHooks[event] = groups
+      continue
+    }
+    const kept: HookGroup[] = []
+    for (const group of groups as HookGroup[]) {
+      if (!group || !Array.isArray(group.hooks)) {
+        kept.push(group)
+        continue
+      }
+      const leaves = group.hooks.filter((leaf) => {
+        const ours = leafIsOurs(leaf)
+        if (ours) removed += 1
+        return !ours
+      })
+      if (leaves.length === 0) continue
+      kept.push(leaves.length === group.hooks.length ? group : { ...group, hooks: leaves })
+    }
+    if (kept.length > 0) nextHooks[event] = kept
+  }
+  const next = { ...doc }
+  if (Object.keys(nextHooks).length > 0) next['hooks'] = nextHooks
+  else delete next['hooks']
+  return { doc: next, removed }
+}
+
+export function legacyHooksPresent(): boolean {
+  try {
+    return withoutLegacyHooks(JSON.parse(fs.readFileSync(hooksPath(), 'utf-8')) as Record<string, unknown>).removed > 0
+  } catch {
+    return false
+  }
+}
+
+export function legacyBundlePresent(): boolean {
+  return fs.existsSync(path.join(identityHome(), LEGACY_BUNDLE))
+}
+
+/** Strip the previous release's hooks and stable CLI bundle. Idempotent. */
+export function removeLegacyWiring(): PlacementStep | null {
+  const notes: string[] = []
+  const file = hooksPath()
+  if (fs.existsSync(file)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as unknown
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const { doc, removed } = withoutLegacyHooks(parsed as Record<string, unknown>)
+        if (removed > 0) {
+          let mode = 0o600
+          try {
+            mode = fs.statSync(file).mode & 0o777
+          } catch {
+            /* keep private */
+          }
+          if (Object.keys(doc).length === 0) fs.unlinkSync(file)
+          else atomicWriteFile(file, JSON.stringify(doc, null, 2) + '\n', mode)
+          notes.push(`${removed} lifecycle hook${removed === 1 ? '' : 's'} removed from hooks.json (receiving no longer needs hooks)`)
+        }
+      }
+    } catch (err) {
+      return { name: 'legacy', status: 'failed', detail: `${file} could not be read as JSON; the old AgentChat hooks were left in place: ${String(err)}` }
+    }
+  }
+  const bundle = path.join(identityHome(), LEGACY_BUNDLE)
+  if (fs.existsSync(bundle)) {
+    try {
+      fs.rmSync(bundle, { force: true })
+      notes.push('stable CLI bundle removed')
+    } catch {
+      /* a locked file stays inert */
+    }
+  }
+  if (notes.length === 0) return null
+  log.debug(`legacy cleanup: ${notes.join('; ')}`)
+  return { name: 'legacy', status: 'changed', detail: notes.join('; ') }
+}
+
+// ─── all together ───────────────────────────────────────────────────────────
+
+/**
+ * Place everything for the current identity (or the offer when there is none).
+ * Never throws; each step reports. The key and the MCP block need an identity.
+ */
+export function placeAll(identity: PlacementIdentity | null): PlacementStep[] {
+  const steps: PlacementStep[] = []
+  const legacy = removeLegacyWiring()
+  if (legacy) steps.push(legacy)
+  steps.push(placeSkill())
+  if (identity) {
+    steps.push(placeKey(identity.apiKey))
+    steps.push(placeMcp(identity.apiBase))
+    steps.push(placeIdentityLine(identity.handle))
+  } else {
+    steps.push(placeOffer())
+  }
+  return steps
+}
+
+/** Logout: the key leaves Codex; the MCP block (a template on the variable), the manual and the skill stay. */
+export function unplaceIdentity(): PlacementStep[] {
+  return [removeKey(), placeOffer()]
+}
+
+/** Uninstall: everything this integration placed, the identity line included. */
+export function removePlacement(): PlacementStep[] {
+  const steps: PlacementStep[] = []
+  const legacy = removeLegacyWiring()
+  if (legacy) steps.push(legacy)
+  steps.push(removeKey())
+  steps.push(removeMcp())
+  steps.push(removeSkill())
+  steps.push({ name: 'identity', status: removeAnchorAt(anchorFile()) === 'removed' ? 'changed' : 'ok', detail: `${path.basename(anchorFile())} AgentChat block removed` })
+  return steps
+}
+
+export interface PlacementCheck {
+  readonly name: 'key' | 'mcp' | 'identity' | 'skill' | 'legacy'
+  readonly ok: boolean
+  readonly detail: string
+}
+
+/** For `status` and `doctor`: is everything where it should be? */
+export function checkPlacement(identity: PlacementIdentity | null): PlacementCheck[] {
+  const checks: PlacementCheck[] = []
+  if (identity) {
+    const claimed = readAnchorHandleAt(anchorFile())
+    const current = anchorIsCurrentAt(anchorFile(), identity.handle)
+    checks.push({
+      name: 'identity',
+      ok: current,
+      detail: current
+        ? `identity line for @${identity.handle} in ${anchorFile()}`
+        : claimed === null
+          ? `identity line missing from ${anchorFile()}`
+          : claimed !== identity.handle
+            ? `${anchorFile()} says @${claimed} but this agent is @${identity.handle}`
+            : `${anchorFile()} carries an older identity text`,
+    })
+    const inDotEnv = readKeyFromDotEnv()
+    checks.push({
+      name: 'key',
+      ok: inDotEnv === identity.apiKey,
+      detail:
+        inDotEnv === identity.apiKey
+          ? `${API_KEY_ENV} in ${dotEnvPath()} matches this agent's credentials`
+          : inDotEnv === undefined
+            ? `${API_KEY_ENV} is not in ${dotEnvPath()} — the hosted tools cannot authenticate`
+            : `${API_KEY_ENV} in ${dotEnvPath()} differs from this agent's credentials`,
+    })
+  }
+  const skillCurrent = skillIsCurrent()
+  checks.push({ name: 'skill', ok: skillCurrent, detail: skillCurrent ? `manual current at ${skillPath()}` : `manual missing or stale at ${skillPath()}` })
+  const mcp = inspectMcpBlock(identity?.apiBase ?? process.env['AGENTCHAT_API_BASE']?.trim() ?? 'https://api.agentchat.me')
+  checks.push({
+    name: 'mcp',
+    ok: mcp === 'current' || mcp === 'foreign',
+    detail:
+      mcp === 'current'
+        ? `[mcp_servers.${MCP_SERVER_NAME}] → hosted tools, bearer token from ${API_KEY_ENV}`
+        : mcp === 'foreign'
+          ? `[mcp_servers.${MCP_SERVER_NAME}] is managed by hand in ${configPath()}`
+          : mcp === 'stale'
+            ? `the agentchat block in ${configPath()} is from an older release`
+            : `no [mcp_servers.${MCP_SERVER_NAME}] in ${configPath()} — the agent has no AgentChat tools`,
+  })
+  const leftovers = [legacyHooksPresent() ? 'hooks in hooks.json' : null, legacyBundlePresent() ? 'stable CLI bundle' : null].filter((v): v is string => v !== null)
+  checks.push({ name: 'legacy', ok: leftovers.length === 0, detail: leftovers.length === 0 ? 'no pre-doorbell wiring left' : `pre-doorbell wiring still present: ${leftovers.join(', ')}` })
+  return checks
+}
+
+export function formatPlacement(steps: readonly (PlacementStep | PlacementCheck)[]): string[] {
+  return steps.map((step) => {
+    const mark = 'status' in step ? (step.status === 'failed' ? '✗' : step.status === 'skipped' ? '–' : '✓') : step.ok ? '✓' : '✗'
+    return `  ${mark} ${step.name}: ${step.detail}`
+  })
+}
