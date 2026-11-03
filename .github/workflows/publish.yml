@@ -73,77 +73,10 @@ jobs:
       # tried to read `npm pack --json` and blocked two good releases because
       # prepack scripts write to the same stdout, and npm's output shape differs
       # between the runner's npm and a contributor's. Untarring cannot drift.
-      - name: the published tarball contains both bundles, and they run
+      - name: the published tarball contains both bundles, and the doorbell installs from it
         id: pack
-        run: |
-          set -euo pipefail
-          rm -rf /tmp/verify && mkdir -p /tmp/verify
-          # --ignore-scripts: dist was just built by the step above, and letting
-          # prepack rebuild is exactly what destroyed 0.0.11's tarball.
-          tgz="$(npm pack --ignore-scripts --pack-destination /tmp/verify | tail -1)"
-          echo "packed: $tgz"
-          tar xzf "/tmp/verify/$tgz" -C /tmp/verify
-          echo "--- tarball contents ---"
-          (cd /tmp/verify/package && find . -type f | sed 's|^\./|  |' | sort)
-
-          for f in dist/index.js dist/daemon-main.js; do
-            if [ ! -f "/tmp/verify/package/$f" ]; then
-              echo "::error::the tarball is missing $f"; exit 1
-            fi
-          done
-
-          # Run them from the unpacked tarball with no node_modules beside it —
-          # exactly how npx will. A missing inlined dependency dies here.
-          mkdir -p /tmp/verify/empty-home
-          cd /tmp/verify/package
-
-          cli_out="$(node dist/index.js --version 2>&1 || true)"
-          echo "--- cli --version: $cli_out"
-          case "$cli_out" in
-            *"Cannot find module"*|*"ERR_MODULE_NOT_FOUND"*|*"Dynamic require"*)
-              echo "::error::the CLI is not self-contained"; exit 1;;
-          esac
-          [ "$cli_out" = "$(node -p "require('/tmp/verify/package/package.json').version")" ] || {
-            echo "::error::--version printed '$cli_out', which is not the published version"; exit 1; }
-
-          # The daemon is RESIDENT: it idles rather than exiting, so this is
-          # bounded by killing it, not by waiting. Waiting is what hung CI.
-          dlog="$(mktemp)"
-          ( node dist/daemon-main.js --home /tmp/verify/empty-home >"$dlog" 2>&1 ) &
-          dpid=$!
-          sleep 6
-          dalive=0; kill -0 $dpid 2>/dev/null && dalive=1
-          kill $dpid 2>/dev/null || true
-          wait $dpid 2>/dev/null || true
-          echo "--- daemon:"; cat "$dlog"
-          [ "$dalive" = "1" ] || { echo "::error::the daemon exited instead of idling"; exit 1; }
-          grep -q "always-on resident" "$dlog" || { echo "::error::the daemon did not come up from the tarball"; exit 1; }
-          echo "both bundles run from the tarball, and the daemon is resident"
-
-          # ── And through a bin shim, which is how npx actually runs it ──
-          #
-          # 0.0.12 shipped with `daemon install` broken for every user: the
-          # daemon was resolved relative to process.argv[1], which under npx is
-          # the symlink in node_modules/.bin, not the bundle. Running the files
-          # by their real paths — as everything above does — cannot see that.
-          # So install the tarball for real and drive the published bin.
-          rm -rf /tmp/npxlike && mkdir -p /tmp/npxlike/home/.codex/agentchat
-          cd /tmp/npxlike
-          npm init -y >/dev/null 2>&1
-          npm install --no-audit --no-fund "/tmp/verify/$tgz" >/dev/null 2>&1
-          printf '{"api_key":"ac_live_%040d","handle":"ci-probe"}' 0 \
-            > /tmp/npxlike/home/.codex/agentchat/credentials
-          shim_out="$(HOME=/tmp/npxlike/home CODEX_HOME=/tmp/npxlike/home/.codex \
-            AGENTCHAT_SERVICE_DRY_RUN=1 ./node_modules/.bin/agentchat-codex daemon install 2>&1 || true)"
-          echo "--- via node_modules/.bin: $shim_out"
-          case "$shim_out" in
-            *"daemon bundle is missing"*)
-              echo "::error::daemon install cannot find the daemon when run through a bin shim"; exit 1;;
-          esac
-          test -f /tmp/npxlike/home/.codex/agentchat/bin/agentchat-daemon.mjs || {
-            echo "::error::daemon install did not place the durable daemon copy"; exit 1; }
-          echo "daemon install works through the published bin ✓"
-          cd "$GITHUB_WORKSPACE"
-          echo "tgz=/tmp/verify/$tgz" >> "$GITHUB_OUTPUT"
+        # scripts/release-smoke.sh: also run by ci.yml on every PR, so it cannot
+        # go stale between releases (it did once and failed the 0.1.0 publish).
+        run: bash scripts/release-smoke.sh
 
       - run: npm publish "${{ steps.pack.outputs.tgz }}" --ignore-scripts --provenance --access public
