@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { buildDoorbellPrompts, manualPointer, mcpToolNamer, wakeInstruction } from '@agentchatme/agent-core'
+import { manualPointer } from '@agentchatme/agent-core'
 import { CodexRunner } from '../src/runner.js'
 import { codexRunArgs } from '../src/profile.js'
 import { installFakeCodex, readRuns, type FakeCodex } from './helpers/fake-codex.js'
@@ -93,7 +93,9 @@ describe('the permission profiles, as codex exec flags', () => {
 })
 
 describe('CodexRunner', () => {
-  const prompts = buildDoorbellPrompts({ toolName: mcpToolNamer('agentchat'), manualPointer: manualPointer('at ~/.codex/skills/agentchat/SKILL.md') })
+  // The served wake instruction (GET /v1/texts?runtime=codex) plus the pointer line, as the daemon builds it.
+  const SERVED_WAKE = 'You were woken by AgentChat. SERVED WAKE INSTRUCTION for codex: call mcp__agentchat__agentchat_inbox first.'
+  const prompts = { wake: `${SERVED_WAKE}\n\n${manualPointer('at ~/.codex/skills/agentchat/SKILL.md')}`, invite: 'SERVED INVITE PROMPT' }
 
   it('preflight passes with a current, signed-in codex', async () => {
     expect(await runner('answer').preflight()).toEqual({ ok: true })
@@ -110,9 +112,9 @@ describe('CodexRunner', () => {
     expect(await runner('answer').preflight()).toMatchObject({ ok: false, detail: expect.stringMatching(/>= 0\.154\.0/) })
   })
 
-  it('a knock run: the server’s wake text as the prompt on stdin, the profile flags, the workdir, the key in the environment — output discarded', async () => {
+  it('a wake run: the server’s wake text as the prompt on stdin, the profile flags, the workdir, the key in the environment — output discarded', async () => {
     fs.mkdirSync(workdir, { recursive: true })
-    const outcome = await runner('answer').start({ kind: 'knock', prompt: prompts.knock, runId: 'r1', budgetMs: 10_000 })
+    const outcome = await runner('answer').start({ kind: 'wake', prompt: prompts.wake, runId: 'r1', budgetMs: 10_000 })
     expect(outcome).toMatchObject({ state: 'ok', exitCode: 0 })
     expect(JSON.stringify(outcome)).not.toContain('Peer text')
 
@@ -122,11 +124,11 @@ describe('CodexRunner', () => {
     expect(run.argv).toEqual(codexRunArgs('answer', { workdir }))
     // The whole multi-line prompt arrives on stdin, byte for byte — on Windows
     // an argument would be cut at the first line break by cmd.exe.
-    expect(run.stdin).toBe(prompts.knock)
-    expect(prompts.knock).toContain('\n')
+    expect(run.stdin).toBe(prompts.wake)
+    expect(prompts.wake).toContain('\n')
     expect(run.argv.join(' ')).not.toContain('woken by AgentChat')
     const prompt = run.stdin!
-    expect(prompt.startsWith(wakeInstruction(mcpToolNamer('agentchat')))).toBe(true)
+    expect(prompt.startsWith(SERVED_WAKE)).toBe(true)
     expect(prompt).toContain('mcp__agentchat__agentchat_inbox')
     expect(prompt).not.toMatch(/gate step/i)
     expect(fs.realpathSync(run.cwd)).toBe(fs.realpathSync(workdir))
@@ -146,7 +148,7 @@ describe('CodexRunner', () => {
 
   it('classifies: a failure after output is failed, a silent non-zero exit is not_started, a hang is timed_out', async () => {
     fs.mkdirSync(workdir, { recursive: true })
-    const request = { kind: 'knock' as const, prompt: 'P', runId: 'r', budgetMs: 15_000 }
+    const request = { kind: 'wake' as const, prompt: 'P', runId: 'r', budgetMs: 15_000 }
     const failed = await runner('answer', { FAKE_CODEX_RUN: 'fail' }).start(request)
     expect(failed).toMatchObject({ state: 'failed', exitCode: 1 })
     expect(failed.detail).toContain('the fake runtime failed')
@@ -164,6 +166,6 @@ describe('CodexRunner', () => {
   it('a missing codex binary is not_started, never a throw', async () => {
     fs.mkdirSync(workdir, { recursive: true })
     const r = new CodexRunner({ codexHome, identityHome, workdir, profile: 'answer', command: path.join(sandbox, 'no-such-codex'), env: env() })
-    expect((await r.start({ kind: 'knock', prompt: 'P', runId: 'r', budgetMs: 1_000 })).state).toBe('not_started')
+    expect((await r.start({ kind: 'wake', prompt: 'P', runId: 'r', budgetMs: 1_000 })).state).toBe('not_started')
   })
 })

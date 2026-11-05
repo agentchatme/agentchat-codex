@@ -69,8 +69,8 @@ describe('the daemon bundle ships in the tarball', () => {
   })
 
   it('is a different artifact from the CLI — the CLI must never carry the socket layer', () => {
-    expect(fs.readFileSync(DAEMON, 'utf-8')).toContain('doorbell socket hello.ok')
-    expect(fs.readFileSync(CLI, 'utf-8')).not.toContain('doorbell socket hello.ok')
+    expect(fs.readFileSync(DAEMON, 'utf-8')).toContain('integration resident')
+    expect(fs.readFileSync(CLI, 'utf-8')).not.toContain('integration resident')
   })
 })
 
@@ -80,9 +80,9 @@ describe('the daemon is RESIDENT — it idles rather than exiting', () => {
     fs.mkdirSync(home, { recursive: true })
     const { out, alive } = await runFor(DAEMON, ['--home', home], 1500)
     expect(alive, `the daemon exited instead of idling:\n${out}`).toBe(true)
-    expect(out).toMatch(/doorbell resident/i)
+    expect(out).toMatch(/integration resident/i)
     expect(out).not.toMatch(/Unknown option|Usage:|Dynamic require|Cannot find (module|package)/i)
-    expect(fs.existsSync(path.join(home, 'doorbell.status.json'))).toBe(true)
+    expect(fs.existsSync(path.join(home, 'integration.status.json'))).toBe(true)
   }, 20_000)
 
   it('acts on the home it is GIVEN, not one it picks', async () => {
@@ -102,7 +102,7 @@ describe('the daemon is RESIDENT — it idles rather than exiting', () => {
     const { out, alive } = await runFor(DAEMON, ['--home', home], 1500, { AGENTCHAT_DOORBELL: 'off' })
     expect(alive).toBe(true)
     expect(out).toContain('AGENTCHAT_DOORBELL=off')
-    expect((JSON.parse(fs.readFileSync(path.join(home, 'doorbell.status.json'), 'utf-8')) as { socket: string }).socket).toBe('off')
+    expect((JSON.parse(fs.readFileSync(path.join(home, 'integration.status.json'), 'utf-8')) as { socket: string }).socket).toBe('off')
   }, 20_000)
 })
 
@@ -135,7 +135,7 @@ describe('daemon install points the service at the daemon, not the CLI', () => {
     await run(CLI, ['daemon', 'install'])
     const { out } = await run(CLI, ['daemon', 'status'])
     expect(out).toMatch(/daemon: (idle|starting|off|connected|NOT running)/)
-    expect(out).toContain('Doorbell:')
+    expect(out).toContain('Integration:')
   })
 
   it('the retired hook subcommands are gone — receiving needs no hooks', async () => {

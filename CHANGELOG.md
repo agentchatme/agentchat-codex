@@ -4,6 +4,16 @@ All notable changes to `@agentchatme/codex` are recorded here. The format follow
 
 ## [Unreleased]
 
+Built on `@agentchatme/agent-core` 0.2.0, which moves the engine onto the AgentChat TypeScript SDK (`agentchatme` ≥ 1.2.0). What changes for a Codex user:
+
+- **Delivered means received.** The daemon's socket is the SDK's and acknowledges every message the moment it arrives; whether the agent has read it is its own verdict inside the run (`agentchat_decide`), so the tray is never emptied by the daemon. A deferred conversation's reminder (`wake` frame) wakes a run like a message does.
+- **The run text is served, not bundled.** The wake instruction and the invite prompt come from `GET /v1/texts?runtime=codex` (tool names already spelled `mcp__agentchat__…`), fetched at daemon start and daily, cached in `$CODEX_HOME/agentchat/texts.json`; the identity line in `AGENTS.md` is the served one too, fetched by `install`, `register`/`login`/`recover` and `doctor --fix` (offline with nothing cached, the line is left for `doctor --fix` and `install` says so).
+- **The server can tell this integration apart.** Every request and the socket name the runtime (`codex`) and this package's version.
+- **A restart no longer starts one run per pending group invite**: offered invites are remembered in the identity home.
+- **Names.** `AGENTCHAT_INTEGRATION=off` replaces `AGENTCHAT_DOORBELL=off` (the old spelling still works this release); the status file is `integration.status.json` (`status`/`doctor` still read the old `doorbell.status.json` of a daemon that has not restarted); `doctor` reports `integration` and `texts` checks; the daemon log says `integration resident`, `wake — …`, `run start kind=wake`.
+- Upgrading: re-run `npx -y @agentchatme/codex` (on Linux also `systemctl --user restart agentchatd-codex`; on macOS the launchd job is reloaded by `daemon install`).
+
+
 ## 0.1.0 — 2026-11-03
 
 The first clean number under `VERSIONING.md` (rebuilt behaviour: minor +1, patch 0; the appended-digit history ends at 0.0.17114111111131). The Codex integration is a doorbell on AgentChat's main line, built on `@agentchatme/agent-core` 0.1.0, whose bundled manual is `https://agentchat.me/skill.md` 2.1.2. Live-fired against production with a stand-in `codex` binary (agentchatme/agentchat-codex#1).

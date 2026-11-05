@@ -5,7 +5,7 @@ import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { MANUAL, IDENTITY_LINE_TEMPLATE } from '@agentchatme/agent-core'
+import { MANUAL } from '@agentchatme/agent-core'
 import { installFakeCodex, type FakeCodex } from './helpers/fake-codex.js'
 
 const exec = promisify(execFile)
@@ -89,9 +89,33 @@ const EXPECTED_BLOCK = [
   '# agentchat:end',
 ].join('\n')
 
+const SERVED_LINE = (handle: string): string => `I am @${handle} on AgentChat (api.agentchat.me). Served identity line for codex, cached by the test.`
+
+/** The texts the daemon would have cached in the identity home (the sandbox api_base is unroutable, so the CLI falls back to this). */
+function seedTextsCache(identityHome: string, handle: string): void {
+  fs.mkdirSync(identityHome, { recursive: true })
+  fs.writeFileSync(
+    path.join(identityHome, 'texts.json'),
+    JSON.stringify({
+      version: 1,
+      fetched_at: new Date().toISOString(),
+      runtime: 'codex',
+      texts: {
+        version: '1',
+        manual: { url: 'https://agentchat.me/skill.md', version: '2.1.2' },
+        wake_instruction: 'SERVED WAKE INSTRUCTION',
+        invite_prompt: 'SERVED INVITE PROMPT',
+        identity_line: SERVED_LINE(handle),
+        identity_line_template: SERVED_LINE('<handle>'),
+      },
+    }),
+  )
+}
+
 function giveCodexAnIdentity(): void {
   fs.mkdirSync(home(), { recursive: true })
   fs.writeFileSync(creds(), JSON.stringify({ api_key: KEY, handle: 'codex-agent', api_base: 'http://127.0.0.1:9' }))
+  seedTextsCache(home(), 'codex-agent')
 }
 
 describe('install places the four texts', () => {
@@ -121,7 +145,7 @@ describe('install places the four texts', () => {
     expect(fs.readFileSync(configToml(), 'utf-8')).toBe(`[model]\nname = "o4"\n\n${EXPECTED_BLOCK}\n`)
     expect(fs.readFileSync(configToml(), 'utf-8')).not.toContain(KEY) // the key is never in config.toml
     const md = fs.readFileSync(agentsMd(), 'utf-8')
-    expect(md).toContain(IDENTITY_LINE_TEMPLATE.split('<handle>').join('codex-agent'))
+    expect(md).toContain(SERVED_LINE('codex-agent'))
     expect(md).not.toContain('no account yet')
     expect(fs.readFileSync(skill(), 'utf-8')).toBe(MANUAL)
     expect(out.stdout).toContain('Connected as @codex-agent')
@@ -147,6 +171,7 @@ describe('install places the four texts', () => {
     const relocated = path.join(sandbox, 'relocated-codex')
     fs.mkdirSync(path.join(relocated, 'agentchat'), { recursive: true })
     fs.writeFileSync(path.join(relocated, 'agentchat', 'credentials'), JSON.stringify({ api_key: KEY, handle: 'moved-agent', api_base: 'http://127.0.0.1:9' }))
+    seedTextsCache(path.join(relocated, 'agentchat'), 'moved-agent')
     const out = await run([], { CODEX_HOME: relocated })
     expect(out.code, out.stdout + out.stderr).toBe(0)
     expect(fs.existsSync(path.join(relocated, 'skills', 'agentchat', 'SKILL.md'))).toBe(true)
@@ -323,9 +348,14 @@ describe('the published bundle is self-contained', () => {
     expect(bundle).not.toMatch(/^import .* from ["'](agentchatme|@agentchatme\/|zod)/m)
   })
 
-  it('reads no message content anywhere: the daemon carries no body parser', () => {
+  it('the socket in the daemon is the SDK’s, acking on receipt — not the old never-ack socket, and no turn adapter reading output', () => {
+    // Delivered = this machine received it (the SDK acks at parse time); read
+    // is the agent's verdict inside its run. That the daemon reads no body and
+    // pulls no backlog itself is proved against a server double in
+    // agent-core's tests (every HTTP path and client frame is recorded there).
     const bundle = fs.readFileSync(path.join(__dirname, '..', 'dist', 'daemon-main.js'), 'utf-8')
-    expect(bundle).not.toMatch(/messages\/sync/)
-    expect(bundle).not.toMatch(/type:\s*['"]ack['"]/)
+    expect(bundle).toMatch(/ackOnReceipt:\s*(!0|true)/)
+    expect(bundle).not.toMatch(/DoorbellSocket|x-agentchat-capabilities/)
+    expect(bundle).not.toMatch(/AGENTCHAT_TURN_OUTCOME|stream-json/)
   })
 })
