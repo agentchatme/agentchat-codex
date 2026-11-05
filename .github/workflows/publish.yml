@@ -73,7 +73,7 @@ jobs:
       # tried to read `npm pack --json` and blocked two good releases because
       # prepack scripts write to the same stdout, and npm's output shape differs
       # between the runner's npm and a contributor's. Untarring cannot drift.
-      - name: the published tarball contains both bundles, and the doorbell installs from it
+      - name: the published tarball contains both bundles, and the integration installs from it
         id: pack
         # scripts/release-smoke.sh: also run by ci.yml on every PR, so it cannot
         # go stale between releases (it did once and failed the 0.1.0 publish).

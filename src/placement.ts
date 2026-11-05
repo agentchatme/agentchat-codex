@@ -54,6 +54,8 @@ export interface PlacementIdentity {
   readonly handle: string
   readonly apiKey: string
   readonly apiBase: string
+  /** The served identity line for this agent (`GET /v1/texts`, or the identity-home cache); null when neither could be had. */
+  readonly identityLine: string | null
 }
 
 export const TOML_START = '# agentchat:start'
@@ -300,10 +302,19 @@ export function removeSkill(): PlacementStep {
 
 // ─── the identity line ──────────────────────────────────────────────────────
 
-export function placeIdentityLine(handle: string): PlacementStep {
+export function placeIdentityLine(handle: string, identityLine: string | null): PlacementStep {
+  if (identityLine === null) {
+    // The line is the server's. Without it (offline, nothing cached) nothing is
+    // written: `doctor --fix` places it once the texts can be fetched.
+    return {
+      name: 'identity',
+      status: 'skipped',
+      detail: `identity line for @${handle} not written — the served texts (GET /v1/texts) could not be fetched and none are cached; run \`doctor --fix\` once online`,
+    }
+  }
   try {
-    const current = anchorIsCurrentAt(anchorFile(), handle)
-    if (!current) writeAnchor(anchorFile(), renderAnchorBlock(handle), handle)
+    const current = anchorIsCurrentAt(anchorFile(), identityLine)
+    if (!current) writeAnchor(anchorFile(), renderAnchorBlock(identityLine), handle)
     return { name: 'identity', status: current ? 'ok' : 'changed', detail: `identity line for @${handle} in ${anchorFile()}` }
   } catch (err) {
     return { name: 'identity', status: 'failed', detail: `could not write the identity line to ${anchorFile()}: ${String(err)}` }
@@ -433,7 +444,7 @@ export function placeAll(identity: PlacementIdentity | null): PlacementStep[] {
   if (identity) {
     steps.push(placeKey(identity.apiKey))
     steps.push(placeMcp(identity.apiBase))
-    steps.push(placeIdentityLine(identity.handle))
+    steps.push(placeIdentityLine(identity.handle, identity.identityLine))
   } else {
     steps.push(placeOffer())
   }
@@ -468,12 +479,15 @@ export function checkPlacement(identity: PlacementIdentity | null): PlacementChe
   const checks: PlacementCheck[] = []
   if (identity) {
     const claimed = readAnchorHandleAt(anchorFile())
-    const current = anchorIsCurrentAt(anchorFile(), identity.handle)
+    // null: the served texts were unavailable, so only the handle can be checked.
+    const current = identity.identityLine === null ? null : anchorIsCurrentAt(anchorFile(), identity.identityLine)
     checks.push({
       name: 'identity',
-      ok: current,
-      detail: current
+      ok: current === true || (current === null && claimed === identity.handle),
+      detail: current === true
         ? `identity line for @${identity.handle} in ${anchorFile()}`
+        : current === null && claimed === identity.handle
+          ? `identity line for @${identity.handle} in ${anchorFile()} (served texts unavailable — currency not checked)`
         : claimed === null
           ? `identity line missing from ${anchorFile()}`
           : claimed !== identity.handle
@@ -508,7 +522,7 @@ export function checkPlacement(identity: PlacementIdentity | null): PlacementChe
             : `no [mcp_servers.${MCP_SERVER_NAME}] in ${configPath()} — the agent has no AgentChat tools`,
   })
   const leftovers = [legacyHooksPresent() ? 'hooks in hooks.json' : null, legacyBundlePresent() ? 'stable CLI bundle' : null].filter((v): v is string => v !== null)
-  checks.push({ name: 'legacy', ok: leftovers.length === 0, detail: leftovers.length === 0 ? 'no pre-doorbell wiring left' : `pre-doorbell wiring still present: ${leftovers.join(', ')}` })
+  checks.push({ name: 'legacy', ok: leftovers.length === 0, detail: leftovers.length === 0 ? 'no pre-0.1.0 wiring left' : `pre-0.1.0 wiring still present: ${leftovers.join(', ')}` })
   return checks
 }
 
