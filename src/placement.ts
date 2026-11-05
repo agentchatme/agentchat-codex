@@ -522,7 +522,7 @@ export function checkPlacement(identity: PlacementIdentity | null): PlacementChe
             : `no [mcp_servers.${MCP_SERVER_NAME}] in ${configPath()} — the agent has no AgentChat tools`,
   })
   const leftovers = [legacyHooksPresent() ? 'hooks in hooks.json' : null, legacyBundlePresent() ? 'stable CLI bundle' : null].filter((v): v is string => v !== null)
-  checks.push({ name: 'legacy', ok: leftovers.length === 0, detail: leftovers.length === 0 ? 'no pre-doorbell wiring left' : `pre-doorbell wiring still present: ${leftovers.join(', ')}` })
+  checks.push({ name: 'legacy', ok: leftovers.length === 0, detail: leftovers.length === 0 ? 'no pre-0.1.0 wiring left' : `pre-0.1.0 wiring still present: ${leftovers.join(', ')}` })
   return checks
 }
 
