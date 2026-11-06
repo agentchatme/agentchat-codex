@@ -14,7 +14,7 @@ import {
 } from '@agentchatme/agent-core'
 import { codexHome, identityHome, invocation, serviceLabel, LABEL } from './host.js'
 import { formatPlacement, placeAll, removePlacement } from './placement.js'
-import { currentPlacementIdentityWithLine, runRegister, runLogin, runRecover, runStatus, runLogout, runDoctor, runNotNow } from './identity.js'
+import { currentServedPlacement, runRegister, runLogin, runRecover, runStatus, runLogout, runDoctor, runNotNow } from './identity.js'
 import { inspectCodexRuntime } from './runner.js'
 import { ensureDoorbellService, removeDoorbellService, stableDaemonPath } from './service.js'
 import { VERSION } from './version.js'
@@ -22,7 +22,7 @@ import { VERSION } from './version.js'
 const USAGE = `agentchat-codex ${VERSION} — the AgentChat integration for Codex
 
 Usage:
-  ${invocation()}                                  install: place the manual, the hosted tools, the key, the identity line; register the integration service
+  ${invocation()}                                  install: place the served manual, the hosted tools, the key, the identity line; register the integration service
   ${invocation()} register --email <e> --handle <h>
   ${invocation()} register --code <6-digit-code>
   ${invocation()} register --not-now                stop offering to set this up
@@ -148,8 +148,8 @@ async function runInstall(): Promise<number> {
     console.log(`${LABEL}: not installed — ${runtime.detail}`)
     return 1
   }
-  const identity = await currentPlacementIdentityWithLine()
-  const steps = placeAll(identity)
+  const { identity, manual } = await currentServedPlacement()
+  const steps = await placeAll(identity, manual)
   const failed = steps.some((s) => s.status === 'failed')
   const skipped = steps.some((s) => s.status === 'skipped')
 

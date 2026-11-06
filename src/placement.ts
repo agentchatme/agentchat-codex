@@ -1,9 +1,9 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import {
-  MANUAL,
-  MANUAL_URL,
   atomicWriteFile,
+  checkManual,
+  describeManualSync,
   hostedMcpUrl,
   log,
   offerDeclined,
@@ -13,7 +13,10 @@ import {
   renderAnchorBlock,
   renderDeclinedBlock,
   renderUnregisteredBlock,
+  syncManual,
   writeAnchor,
+  type ManualSyncResult,
+  type ServedManual,
 } from '@agentchatme/agent-core'
 import { API_KEY_ENV, MCP_SERVER_NAME, anchorFile, configPath, dotEnvPath, hooksPath, hostCopy, identityHome, skillDir, skillPath } from './host.js'
 
@@ -34,9 +37,14 @@ import { API_KEY_ENV, MCP_SERVER_NAME, anchorFile, configPath, dotEnvPath, hooks
 //    touched.
 // 3. **The identity line** — the manual's anchor text, fenced, in
 //    `$CODEX_HOME/AGENTS.md` (loaded into every Codex session).
-// 4. **The manual** — `https://agentchat.me/skill.md` verbatim as the skill
+// 4. **The manual** — the served one (the address and version `GET /v1/texts`
+//    announce; https://agentchat.me/skill.md today) as the skill
 //    `$CODEX_HOME/skills/agentchat/SKILL.md` (codex-rs/skills: `CODEX_HOME/skills`,
-//    `SKILL.md`), loaded on demand.
+//    `SKILL.md`), loaded on demand. agent-core's `syncManual` downloads it when
+//    the file's version is not the announced one and keeps the file on any
+//    failure; the daemon keeps it current from then on. The copy bundled in
+//    agent-core is written only when there is no file and nothing verified can
+//    be had.
 //
 // Legacy cleanup on upgrade: the four lifecycle hooks the previous release wrote
 // into `hooks.json`, the stable CLI bundle under the identity home, and the old
@@ -45,7 +53,7 @@ import { API_KEY_ENV, MCP_SERVER_NAME, anchorFile, configPath, dotEnvPath, hooks
 export type PlacementStatus = 'ok' | 'changed' | 'skipped' | 'failed'
 
 export interface PlacementStep {
-  readonly name: 'key' | 'mcp' | 'identity' | 'skill' | 'legacy'
+  readonly name: 'key' | 'mcp' | 'identity' | 'manual' | 'legacy'
   readonly status: PlacementStatus
   readonly detail: string
 }
@@ -251,35 +259,37 @@ export function removeMcp(): PlacementStep {
 
 // ─── the manual, as the agentchat skill ─────────────────────────────────────
 
-export function skillIsCurrent(): boolean {
-  try {
-    return fs.readFileSync(skillPath(), 'utf-8') === MANUAL
-  } catch {
-    return false
-  }
+/** Is there an agentchat skill at all (any version)? What `isWired` asks. */
+export function skillPresent(): boolean {
+  return fs.existsSync(skillPath())
 }
 
-export function placeSkill(): PlacementStep {
+/** The installer's line for a sync: a manual not at the announced version is a step not done (`–`). */
+function manualStep(result: ManualSyncResult, removedLegacy: boolean): PlacementStep {
+  const status: PlacementStatus =
+    result.state === 'failed' ? 'failed' : result.upToDate === false ? 'skipped' : result.written || removedLegacy ? 'changed' : 'ok'
+  return { name: 'manual', status, detail: `${describeManualSync(result)}${removedLegacy ? ' (old on-disk manual removed)' : ''}` }
+}
+
+/**
+ * The manual the served texts announce (`manual`, null when none are in
+ * hand), as the agentchat skill. Never throws.
+ */
+export async function placeSkill(manual: ServedManual | null): Promise<PlacementStep> {
+  const result = await syncManual({ path: skillPath(), served: manual })
+  // The previous release kept the manual at <home>/SKILL.md, outside any
+  // skills directory. The skill supersedes it.
+  const legacy = path.join(identityHome(), LEGACY_MANUAL)
+  let removedLegacy = false
   try {
-    const current = skillIsCurrent()
-    if (!current) {
-      fs.mkdirSync(skillDir(), { recursive: true })
-      atomicWriteFile(skillPath(), MANUAL, 0o644)
-    }
-    const legacy = path.join(identityHome(), LEGACY_MANUAL)
-    let removedLegacy = false
     if (fs.existsSync(legacy)) {
       fs.rmSync(legacy, { force: true })
       removedLegacy = true
     }
-    return {
-      name: 'skill',
-      status: current && !removedLegacy ? 'ok' : 'changed',
-      detail: `manual (${MANUAL_URL}, verbatim) as the agentchat skill at ${skillPath()}${removedLegacy ? ' (old on-disk manual removed)' : ''}`,
-    }
-  } catch (err) {
-    return { name: 'skill', status: 'failed', detail: `could not write the manual to ${skillPath()}: ${String(err)}` }
+  } catch {
+    /* a locked file stays inert */
   }
+  return manualStep(result, removedLegacy)
 }
 
 export function removeSkill(): PlacementStep {
@@ -294,9 +304,9 @@ export function removeSkill(): PlacementStep {
       fs.rmSync(legacy, { force: true })
       removed = true
     }
-    return { name: 'skill', status: removed ? 'changed' : 'ok', detail: removed ? 'agentchat skill removed' : 'no agentchat skill to remove' }
+    return { name: 'manual', status: removed ? 'changed' : 'ok', detail: removed ? 'agentchat skill removed' : 'no agentchat skill to remove' }
   } catch (err) {
-    return { name: 'skill', status: 'failed', detail: `could not remove the agentchat skill: ${String(err)}` }
+    return { name: 'manual', status: 'failed', detail: `could not remove the agentchat skill: ${String(err)}` }
   }
 }
 
@@ -435,12 +445,14 @@ export function removeLegacyWiring(): PlacementStep | null {
 /**
  * Place everything for the current identity (or the offer when there is none).
  * Never throws; each step reports. The key and the MCP block need an identity.
+ * `manual` is what the served texts announce (null when none are in hand: an
+ * existing skill is kept, a missing one gets the bundled copy).
  */
-export function placeAll(identity: PlacementIdentity | null): PlacementStep[] {
+export async function placeAll(identity: PlacementIdentity | null, manual: ServedManual | null): Promise<PlacementStep[]> {
   const steps: PlacementStep[] = []
   const legacy = removeLegacyWiring()
   if (legacy) steps.push(legacy)
-  steps.push(placeSkill())
+  steps.push(await placeSkill(manual))
   if (identity) {
     steps.push(placeKey(identity.apiKey))
     steps.push(placeMcp(identity.apiBase))
@@ -469,13 +481,19 @@ export function removePlacement(): PlacementStep[] {
 }
 
 export interface PlacementCheck {
-  readonly name: 'key' | 'mcp' | 'identity' | 'skill' | 'legacy'
+  readonly name: 'key' | 'mcp' | 'identity' | 'manual' | 'legacy'
   readonly ok: boolean
   readonly detail: string
+  /** The doctor verdict when it is not the default mapping of `ok`. */
+  readonly verdict?: 'PASS' | 'WARN' | 'FAIL'
 }
 
-/** For `status` and `doctor`: is everything where it should be? */
-export function checkPlacement(identity: PlacementIdentity | null): PlacementCheck[] {
+/**
+ * For `status` and `doctor`: is everything where it should be? `manual` is
+ * what the served texts announce (null when none are in hand), so the skill
+ * reads `current (2.2.0)` or `stale (have 2.1.2, served 2.2.0)`.
+ */
+export function checkPlacement(identity: PlacementIdentity | null, manual: ServedManual | null): PlacementCheck[] {
   const checks: PlacementCheck[] = []
   if (identity) {
     const claimed = readAnchorHandleAt(anchorFile())
@@ -506,8 +524,11 @@ export function checkPlacement(identity: PlacementIdentity | null): PlacementChe
             : `${API_KEY_ENV} in ${dotEnvPath()} differs from this agent's credentials`,
     })
   }
-  const skillCurrent = skillIsCurrent()
-  checks.push({ name: 'skill', ok: skillCurrent, detail: skillCurrent ? `manual current at ${skillPath()}` : `manual missing or stale at ${skillPath()}` })
+  const skill = checkManual(skillPath(), manual?.version ?? null)
+  // `unchecked` (nothing announced: no account yet, or offline with nothing
+  // cached) is a WARN with no repair to suggest; `stale` and `missing` are
+  // what `doctor --fix` repairs.
+  checks.push({ name: 'manual', ok: skill.state === 'current' || skill.state === 'unchecked', verdict: skill.verdict, detail: skill.detail })
   const mcp = inspectMcpBlock(identity?.apiBase ?? process.env['AGENTCHAT_API_BASE']?.trim() ?? 'https://api.agentchat.me')
   checks.push({
     name: 'mcp',
@@ -526,9 +547,13 @@ export function checkPlacement(identity: PlacementIdentity | null): PlacementChe
   return checks
 }
 
+/** ✓ done / current, – not done but nothing broken (a stale manual, an unchecked one), ✗ failed / missing. */
+export function placementMark(step: PlacementStep | PlacementCheck): string {
+  if ('status' in step) return step.status === 'failed' ? '✗' : step.status === 'skipped' ? '–' : '✓'
+  if (step.verdict !== undefined) return step.verdict === 'PASS' ? '✓' : step.verdict === 'WARN' ? '–' : '✗'
+  return step.ok ? '✓' : '✗'
+}
+
 export function formatPlacement(steps: readonly (PlacementStep | PlacementCheck)[]): string[] {
-  return steps.map((step) => {
-    const mark = 'status' in step ? (step.status === 'failed' ? '✗' : step.status === 'skipped' ? '–' : '✓') : step.ok ? '✓' : '✗'
-    return `  ${mark} ${step.name}: ${step.detail}`
-  })
+  return steps.map((step) => `  ${placementMark(step)} ${step.name}: ${step.detail}`)
 }
