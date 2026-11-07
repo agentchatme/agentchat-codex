@@ -3,7 +3,7 @@ import {
   alwaysOnOptedOut,
   alwaysOnState,
   createIdentityCommands,
-  fetchIdentityLine,
+  fetchServedTexts,
   integrationDisabledBy,
   integrationStatusAge,
   probeHostedMcp,
@@ -18,10 +18,11 @@ import {
   type DoctorContext,
   type DoctorOpts,
   type HostProfile,
+  type ServedManual,
   type StatusContext,
 } from '@agentchatme/agent-core'
 import { CLIENT, identityHome, anchorFile, codexHome, invocation, LABEL } from './host.js'
-import { checkPlacement, placeAll, skillIsCurrent, unplaceIdentity, type PlacementIdentity } from './placement.js'
+import { checkPlacement, placeAll, placementMark, skillPresent, unplaceIdentity, type PlacementIdentity } from './placement.js'
 import { codexIsLoggedIn, inspectCodexRuntime } from './runner.js'
 import { doorbellServiceCurrent, ensureDoorbellService } from './service.js'
 import { VERSION } from './version.js'
@@ -32,7 +33,8 @@ import { VERSION } from './version.js'
 // AgentChat server, so the flows live in @agentchatme/agent-core and this file
 // only says which agent they act on and how to PLACE for it: every time the key
 // changes, `.env` gets the new key, the MCP block is refreshed, the manual is
-// refreshed and the identity line rewritten.
+// brought to the version the served texts announce and the identity line
+// rewritten.
 
 export function currentPlacementIdentity(identityLine: string | null = null): PlacementIdentity | null {
   const identity = resolveIdentity(identityHome())
@@ -40,12 +42,17 @@ export function currentPlacementIdentity(identityLine: string | null = null): Pl
   return { handle: identity.handle, apiKey: identity.apiKey, apiBase: identity.apiBase, identityLine }
 }
 
-/** The identity plus its served identity line (fetched now, else the identity-home cache, else null). */
-export async function currentPlacementIdentityWithLine(): Promise<PlacementIdentity | null> {
+/**
+ * The identity plus what the served texts say for it — the identity line and
+ * the manual they announce — fetched now, else from the identity-home cache,
+ * else null. Without an identity nothing is fetched (the texts need a key):
+ * the manual is then unannounced, so an existing skill is kept as it is.
+ */
+export async function currentServedPlacement(): Promise<{ identity: PlacementIdentity | null; manual: ServedManual | null }> {
   const identity = currentPlacementIdentity()
-  if (identity === null) return null
-  const identityLine = await fetchIdentityLine({ home: identityHome(), apiKey: identity.apiKey, apiBase: identity.apiBase, client: CLIENT })
-  return { ...identity, identityLine }
+  if (identity === null) return { identity: null, manual: null }
+  const loaded = await fetchServedTexts({ home: identityHome(), apiKey: identity.apiKey, apiBase: identity.apiBase, client: CLIENT })
+  return { identity: { ...identity, identityLine: loaded?.texts.identity_line ?? null }, manual: loaded?.texts.manual ?? null }
 }
 
 const profile: HostProfile = {
@@ -56,20 +63,28 @@ const profile: HostProfile = {
   anchorFile,
   invocation,
   renderAnchor: renderAnchorBlock,
-  isWired: skillIsCurrent,
-  // agent-core fetches the served identity line (cache fallback) before calling this.
-  place: (handle, apiKey, identityLine) => {
+  isWired: skillPresent,
+  // agent-core fetches the served texts (cache fallback) once and hands over
+  // the identity line and the manual they announce.
+  place: async (handle, apiKey, identityLine, manual) => {
     const identity = resolveIdentity(identityHome())
-    return placeAll({ handle, apiKey, apiBase: identity?.apiBase ?? 'https://api.agentchat.me', identityLine }).map((s) => `  ${s.status === 'failed' ? 'FAILED' : s.name}: ${s.detail}`)
+    const steps = await placeAll({ handle, apiKey, apiBase: identity?.apiBase ?? 'https://api.agentchat.me', identityLine }, manual)
+    return steps.map((s) => `  ${s.status === 'failed' ? 'FAILED' : s.name}: ${s.detail}`)
   },
   unplace: () => unplaceIdentity().map((s) => `  ${s.name}: ${s.detail}`),
   logoutHints: () => [`To remove the integration too, run \`${invocation()} uninstall\`.`],
-  extraDoctorChecks: (ctx: DoctorContext): DoctorCheck[] => [...runtimeChecks(), ...placementChecks(ctx.fix === true, ctx.identityLine), serviceCheck(ctx.fix === true), integrationCheck()],
-  // The shared status already fetched the served identity line once; the
-  // placement checks reuse it rather than fetching `/v1/texts` again.
-  extraStatus: async ({ identityLine }: StatusContext): Promise<string[]> => {
+  extraDoctorChecks: async (ctx: DoctorContext): Promise<DoctorCheck[]> => [
+    ...runtimeChecks(),
+    ...(await placementChecks(ctx.fix === true, ctx.identityLine, ctx.manual)),
+    serviceCheck(ctx.fix === true),
+    integrationCheck(),
+  ],
+  // The shared status already fetched the served texts once; the placement
+  // checks reuse the identity line and the announced manual rather than
+  // fetching `/v1/texts` again.
+  extraStatus: async ({ identityLine, manual }: StatusContext): Promise<string[]> => {
     const identity = currentPlacementIdentity(identityLine)
-    const lines = ['Placement:', ...checkPlacement(identity).map((c) => `  ${c.ok ? '✓' : '✗'} ${c.name}: ${c.detail}`)]
+    const lines = ['Placement:', ...checkPlacement(identity, manual).map((c) => `  ${placementMark(c)} ${c.name}: ${c.detail}`)]
     if (identity) {
       const reach = await hostedMcpReachCheck()
       lines.push(`  ${reach.verdict === 'PASS' ? '✓' : '✗'} hosted MCP: ${reach.detail}`)
@@ -97,14 +112,14 @@ function runtimeChecks(): DoctorCheck[] {
   ]
 }
 
-function placementChecks(fix: boolean, identityLine: string | null): DoctorCheck[] {
+async function placementChecks(fix: boolean, identityLine: string | null, manual: ServedManual | null): Promise<DoctorCheck[]> {
   const identity = currentPlacementIdentity(identityLine)
-  if (fix) placeAll(identity)
-  return checkPlacement(identity)
+  if (fix) await placeAll(identity, manual)
+  return checkPlacement(identity, manual)
     .filter((c) => c.name !== 'identity') // the shared doctor already reports the identity line
     .map((c) => ({
       name: c.name === 'mcp' ? 'hosted-mcp' : c.name,
-      verdict: c.ok ? 'PASS' : c.name === 'legacy' ? 'WARN' : identity ? 'FAIL' : 'WARN',
+      verdict: c.verdict ?? (c.ok ? 'PASS' : c.name === 'legacy' ? 'WARN' : identity ? 'FAIL' : 'WARN'),
       detail: c.ok ? c.detail : `${c.detail} — run \`${invocation()}${fix ? '' : ' doctor --fix'}\``,
     }))
 }

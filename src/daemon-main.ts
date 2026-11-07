@@ -16,7 +16,8 @@ import { CodexRunner } from './runner.js'
 // `codex` runtime (`GET /v1/texts?runtime=codex`, tool names already spelled
 // `mcp__agentchat__agentchat_inbox` for `[mcp_servers.agentchat]`;
 // codex-rs/core/src/tools/handlers/mcp.rs: `mcp__` prefix, `__` delimiter),
-// then one pointer to the bundled skill — the one line only this package knows.
+// then one pointer to the skill — the one line only this package knows. The
+// skill file follows the manual the same texts announce (`manualPath`).
 
 async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   let values: { home?: string | undefined; workdir?: string | undefined }
@@ -45,6 +46,8 @@ async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
     runner: new CodexRunner({ codexHome: codexHome(), identityHome: home, workdir, profile }),
     client: CLIENT,
     manualPointer: manualPointer(`at ${skillPath()}`),
+    // The skill follows the manual the served texts announce, on their cadence.
+    manualPath: skillPath(),
   })
 }
 

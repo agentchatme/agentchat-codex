@@ -73,7 +73,7 @@ for pass in first idempotent; do
   out="$(run_cli 2>&1)"
   echo "--- $pass install ---"; echo "$out"
   echo "$out" | grep -q "AgentChat integration for Codex $expected"
-  echo "$out" | grep -q "✓ skill: manual"
+  echo "$out" | grep -q "✓ manual: "
   echo "$out" | grep -q "✓ service: integration daemon registered"
   echo "$out" | grep -q 'Ask Codex: "Set up your AgentChat account."'
 done
