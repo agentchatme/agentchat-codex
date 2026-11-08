@@ -169,3 +169,19 @@ describe('CodexRunner', () => {
     expect((await r.start({ kind: 'wake', prompt: 'P', runId: 'r', budgetMs: 1_000 })).state).toBe('not_started')
   })
 })
+
+describe('the integration\'s runs keep the config.toml hosted server', () => {
+  // `agentchat listen --preset codex` overrides `[mcp_servers.agentchat]` per run
+  // (`-c mcp_servers.agentchat.*`, its own key variable). This integration's runs
+  // must not: they use the entry the installer placed in config.toml, keyed by
+  // AGENTCHAT_API_KEY, exactly as before the presets moved.
+  it('no profile passes an mcp_servers override; the key rides in AGENTCHAT_API_KEY', () => {
+    for (const profile of ['answer', 'work', 'full'] as const) {
+      const r = runner(profile)
+      expect(r.args().some((a) => a.startsWith('mcp_servers.'))).toBe(false)
+      const childEnv = r.env()
+      expect(childEnv['AGENTCHAT_API_KEY']).toBe(KEY)
+      expect(childEnv['AGENTCHAT_LISTENER_API_KEY']).toBeUndefined()
+    }
+  })
+})
