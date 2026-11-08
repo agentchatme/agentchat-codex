@@ -4,7 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { manualPointer } from '@agentchatme/agent-core'
 import { CodexRunner } from '../src/runner.js'
-import { codexRunArgs } from '../src/profile.js'
+import { codexRunArgs } from '@agentchatme/agent-core/presets'
 import { installFakeCodex, readRuns, type FakeCodex } from './helpers/fake-codex.js'
 
 // ─── One headless Codex run: the exact flags, the prompt as the positional ──
