@@ -223,6 +223,28 @@ describe.skipIf(!serviceOs)('the service label follows CODEX_HOME', () => {
     for (const name of [INTEGRATION_ENV, INTEGRATION_ENV_LEGACY]) expect(definition).toMatch(new RegExp(`${name}(</key><string>|=)off`))
   })
 
+  // Pinned on purpose, so that changing it is a decision and not an accident:
+  // every install, `daemon install` and `doctor --fix` writes the definition
+  // again from the shell that runs it. A switch captured earlier is not
+  // carried forward — an `off` set at `daemon install` is gone after a plain
+  // install from a shell without it. `daemon disable` is the off that
+  // survives every install and `doctor --fix`.
+  it('a later install from a shell without the switch writes the definition without it; daemon disable is the off that survives', async () => {
+    const definition = definitionPath('agentchatd-codex')
+    expect((await run(CLI, ['daemon', 'install'], { [INTEGRATION_ENV]: 'off' })).code).toBe(0)
+    expect(fs.readFileSync(definition, 'utf-8')).toMatch(new RegExp(`${INTEGRATION_ENV}(</key>\\s*<string>|=)off`))
+
+    const plain = await run(CLI, [])
+    expect(plain.code, plain.out).toBe(0)
+    expect(fs.readFileSync(definition, 'utf-8')).not.toContain(INTEGRATION_ENV)
+
+    expect((await run(CLI, ['daemon', 'disable'])).code).toBe(0)
+    expect(fs.existsSync(definition)).toBe(false)
+    expect((await run(CLI, [])).code).toBe(0)
+    expect((await run(CLI, ['doctor', '--fix'])).out).toContain('disabled by the user')
+    expect(fs.existsSync(definition)).toBe(false)
+  })
+
   it('installing a relocated CODEX_HOME retires its own pre-upgrade plain-label service, never another config’s', async () => {
     const codexHome = path.join(sandbox, 'relocated-codex')
     const legacy = writeForeignDefinition('agentchatd-codex', path.resolve(codexHome, 'agentchat'))
