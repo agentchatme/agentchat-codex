@@ -4,6 +4,7 @@ import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, INTEGRATION_ENV_LEGACY_REMOVAL } from '@agentchatme/agent-core'
 import { installFakeCodex, type FakeCodex } from './helpers/fake-codex.js'
 
 // ─── The service runs something that can actually serve ─────────────────────
@@ -95,13 +96,28 @@ describe('the daemon is RESIDENT — it idles rather than exiting', () => {
     expect(out).not.toContain(b)
   }, 20_000)
 
-  it('AGENTCHAT_DOORBELL=off holds no socket and says so', async () => {
+  it(`${INTEGRATION_ENV}=off holds no socket and says so`, async () => {
     const home = path.join(sandbox, 'off-home')
     fs.mkdirSync(home, { recursive: true })
     fs.writeFileSync(path.join(home, 'credentials'), JSON.stringify({ api_key: 'ac_live_' + 'a'.repeat(40), handle: 'codex-agent', api_base: 'http://127.0.0.1:9' }))
-    const { out, alive } = await runFor(DAEMON, ['--home', home], 1500, { AGENTCHAT_DOORBELL: 'off' })
+    const { out, alive } = await runFor(DAEMON, ['--home', home], 1500, { [INTEGRATION_ENV]: 'off' })
     expect(alive).toBe(true)
-    expect(out).toContain('AGENTCHAT_DOORBELL=off')
+    expect(out).toContain(`${INTEGRATION_ENV}=off`)
+    expect((JSON.parse(fs.readFileSync(path.join(home, 'integration.status.json'), 'utf-8')) as { socket: string }).socket).toBe('off')
+  }, 20_000)
+
+  // Compatibility check: the switch's previous name is still read until
+  // INTEGRATION_ENV_LEGACY_REMOVAL (agent contract v1, section 7), so a
+  // service unit captured with it keeps meaning what its operator set. Named
+  // through agent-core's constant: the day agent-core drops the reader, this
+  // test fails and is deleted with it (src/host.ts stops compiling).
+  it(`the previous switch name (${INTEGRATION_ENV_LEGACY}=off) still holds no socket until ${INTEGRATION_ENV_LEGACY_REMOVAL}`, async () => {
+    const home = path.join(sandbox, 'off-home')
+    fs.mkdirSync(home, { recursive: true })
+    fs.writeFileSync(path.join(home, 'credentials'), JSON.stringify({ api_key: 'ac_live_' + 'a'.repeat(40), handle: 'codex-agent', api_base: 'http://127.0.0.1:9' }))
+    const { out, alive } = await runFor(DAEMON, ['--home', home], 1500, { [INTEGRATION_ENV_LEGACY]: 'off' })
+    expect(alive).toBe(true)
+    expect(out).toContain(`${INTEGRATION_ENV_LEGACY}=off`)
     expect((JSON.parse(fs.readFileSync(path.join(home, 'integration.status.json'), 'utf-8')) as { socket: string }).socket).toBe('off')
   }, 20_000)
 })
@@ -195,6 +211,16 @@ describe.skipIf(!serviceOs)('the service label follows CODEX_HOME', () => {
     expect(out).toMatch(/refusing to remove .* serves \/Users\/someone-else\/\.codex\/agentchat/)
     expect(out).not.toMatch(/Integration daemon is OFF/)
     expect(fs.existsSync(foreign)).toBe(true)
+  })
+
+  it('daemon install captures the switch, and its previous name, into the service definition', async () => {
+    // A launchd/systemd service does not inherit the shell: an operator's
+    // `off` reaches the daemon only through the definition. The previous name
+    // is captured too (compatibility: still read until its removal day).
+    await run(CLI, ['daemon', 'install'], { [INTEGRATION_ENV]: 'off', [INTEGRATION_ENV_LEGACY]: 'off' })
+    const definition = fs.readFileSync(definitionPath('agentchatd-codex'), 'utf-8')
+    // launchd: <key>NAME</key><string>off</string>; systemd: Environment="NAME=off".
+    for (const name of [INTEGRATION_ENV, INTEGRATION_ENV_LEGACY]) expect(definition).toMatch(new RegExp(`${name}(</key><string>|=)off`))
   })
 
   it('installing a relocated CODEX_HOME retires its own pre-upgrade plain-label service, never another config’s', async () => {

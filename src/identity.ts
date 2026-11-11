@@ -24,7 +24,7 @@ import {
 import { CLIENT, identityHome, anchorFile, codexHome, invocation, LABEL } from './host.js'
 import { checkPlacement, placeAll, placementMark, skillPresent, unplaceIdentity, type PlacementIdentity } from './placement.js'
 import { codexIsLoggedIn, inspectCodexRuntime } from './runner.js'
-import { doorbellServiceCurrent, ensureDoorbellService } from './service.js'
+import { listenerServiceCurrent, ensureListenerService } from './service.js'
 import { VERSION } from './version.js'
 
 // ─── This agent, described once ─────────────────────────────────────────────
@@ -36,10 +36,18 @@ import { VERSION } from './version.js'
 // brought to the version the served texts announce and the identity line
 // rewritten.
 
-export function currentPlacementIdentity(identityLine: string | null = null): PlacementIdentity | null {
+/** What the served texts say for the identity block: the line for this agent and the template an unmarked block is recognised by. */
+export interface ServedIdentityTexts {
+  readonly identityLine: string | null
+  readonly identityLineTemplate: string | null
+}
+
+const NO_IDENTITY_TEXTS: ServedIdentityTexts = { identityLine: null, identityLineTemplate: null }
+
+export function currentPlacementIdentity(texts: ServedIdentityTexts = NO_IDENTITY_TEXTS): PlacementIdentity | null {
   const identity = resolveIdentity(identityHome())
   if (identity === null || identity.handle === null) return null
-  return { handle: identity.handle, apiKey: identity.apiKey, apiBase: identity.apiBase, identityLine }
+  return { handle: identity.handle, apiKey: identity.apiKey, apiBase: identity.apiBase, identityLine: texts.identityLine, identityLineTemplate: texts.identityLineTemplate }
 }
 
 /**
@@ -52,7 +60,10 @@ export async function currentServedPlacement(): Promise<{ identity: PlacementIde
   const identity = currentPlacementIdentity()
   if (identity === null) return { identity: null, manual: null }
   const loaded = await fetchServedTexts({ home: identityHome(), apiKey: identity.apiKey, apiBase: identity.apiBase, client: CLIENT })
-  return { identity: { ...identity, identityLine: loaded?.texts.identity_line ?? null }, manual: loaded?.texts.manual ?? null }
+  return {
+    identity: { ...identity, identityLine: loaded?.texts.identity_line ?? null, identityLineTemplate: loaded?.texts.identity_line_template ?? null },
+    manual: loaded?.texts.manual ?? null,
+  }
 }
 
 const profile: HostProfile = {
@@ -65,26 +76,27 @@ const profile: HostProfile = {
   renderAnchor: renderAnchorBlock,
   isWired: skillPresent,
   // agent-core fetches the served texts (cache fallback) once and hands over
-  // the identity line and the manual they announce.
+  // the identity line and the manual they announce. Placing needs no
+  // template: the block is found by its fences and replaced in place.
   place: async (handle, apiKey, identityLine, manual) => {
     const identity = resolveIdentity(identityHome())
-    const steps = await placeAll({ handle, apiKey, apiBase: identity?.apiBase ?? 'https://api.agentchat.me', identityLine }, manual)
+    const steps = await placeAll({ handle, apiKey, apiBase: identity?.apiBase ?? 'https://api.agentchat.me', identityLine, identityLineTemplate: null }, manual)
     return steps.map((s) => `  ${s.status === 'failed' ? 'FAILED' : s.name}: ${s.detail}`)
   },
   unplace: () => unplaceIdentity().map((s) => `  ${s.name}: ${s.detail}`),
   logoutHints: () => [`To remove the integration too, run \`${invocation()} uninstall\`.`],
   extraDoctorChecks: async (ctx: DoctorContext): Promise<DoctorCheck[]> => [
     ...runtimeChecks(),
-    ...(await placementChecks(ctx.fix === true, ctx.identityLine, ctx.manual)),
+    ...(await placementChecks(ctx.fix === true, ctx, ctx.manual)),
     serviceCheck(ctx.fix === true),
     integrationCheck(),
   ],
   // The shared status already fetched the served texts once; the placement
-  // checks reuse the identity line and the announced manual rather than
-  // fetching `/v1/texts` again.
-  extraStatus: async ({ identityLine, manual }: StatusContext): Promise<string[]> => {
-    const identity = currentPlacementIdentity(identityLine)
-    const lines = ['Placement:', ...checkPlacement(identity, manual).map((c) => `  ${placementMark(c)} ${c.name}: ${c.detail}`)]
+  // checks reuse the identity line, its template and the announced manual
+  // rather than fetching `/v1/texts` again.
+  extraStatus: async (ctx: StatusContext): Promise<string[]> => {
+    const identity = currentPlacementIdentity(ctx)
+    const lines = ['Placement:', ...checkPlacement(identity, ctx.manual).map((c) => `  ${placementMark(c)} ${c.name}: ${c.detail}`)]
     if (identity) {
       const reach = await hostedMcpReachCheck()
       lines.push(`  ${reach.verdict === 'PASS' ? '✓' : '✗'} hosted MCP: ${reach.detail}`)
@@ -112,8 +124,8 @@ function runtimeChecks(): DoctorCheck[] {
   ]
 }
 
-async function placementChecks(fix: boolean, identityLine: string | null, manual: ServedManual | null): Promise<DoctorCheck[]> {
-  const identity = currentPlacementIdentity(identityLine)
+async function placementChecks(fix: boolean, texts: ServedIdentityTexts, manual: ServedManual | null): Promise<DoctorCheck[]> {
+  const identity = currentPlacementIdentity(texts)
   if (fix) await placeAll(identity, manual)
   return checkPlacement(identity, manual)
     .filter((c) => c.name !== 'identity') // the shared doctor already reports the identity line
@@ -137,11 +149,11 @@ export async function hostedMcpReachCheck(): Promise<DoctorCheck> {
 function serviceCheck(fix: boolean): DoctorCheck {
   const home = identityHome()
   if (alwaysOnOptedOut(home)) return { name: 'service', verdict: 'PASS', detail: 'disabled by the user (`daemon install` re-enables)' }
-  if (fix && !doorbellServiceCurrent()) {
-    const repaired = ensureDoorbellService()
+  if (fix && !listenerServiceCurrent()) {
+    const repaired = ensureListenerService()
     if (!repaired.ok) return { name: 'service', verdict: 'FAIL', detail: `repair failed: ${repaired.detail ?? 'unknown error'}` }
   }
-  if (!doorbellServiceCurrent()) return { name: 'service', verdict: 'WARN', detail: `service, durable daemon bundle or version marker is missing/stale — run \`${invocation()} doctor --fix\`` }
+  if (!listenerServiceCurrent()) return { name: 'service', verdict: 'WARN', detail: `service, durable daemon bundle or version marker is missing/stale — run \`${invocation()} doctor --fix\`` }
   const state = alwaysOnState(home)
   return { name: 'service', verdict: state === 'down' ? 'FAIL' : 'PASS', detail: `${state}; service definition and daemon bundle match ${VERSION}` }
 }

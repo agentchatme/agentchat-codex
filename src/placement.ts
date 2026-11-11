@@ -35,8 +35,12 @@ import { API_KEY_ENV, MCP_SERVER_NAME, anchorFile, configPath, dotEnvPath, hooks
 //    upgrade replaces it and uninstall strips it, byte-preserving outside the
 //    fence; a hand-written `[mcp_servers.agentchat]` outside the fence is never
 //    touched.
-// 3. **The identity line** — the manual's anchor text, fenced, in
-//    `$CODEX_HOME/AGENTS.md` (loaded into every Codex session).
+// 3. **The identity line** — the shared AgentChat identity block (the SDK
+//    kit's shape, through agent-core: the fences, a handle line
+//    `<!-- agentchat:handle <handle> -->`, the served identity line) in
+//    `$CODEX_HOME/AGENTS.md` (loaded into every Codex session). A block any
+//    earlier release wrote is replaced where it stands, the rest of the file
+//    is kept byte for byte, and the file is written atomically.
 // 4. **The manual** — the served one (the address and version `GET /v1/texts`
 //    announce; https://agentchat.me/skill.md today) as the skill
 //    `$CODEX_HOME/skills/agentchat/SKILL.md` (codex-rs/skills: `CODEX_HOME/skills`,
@@ -69,6 +73,13 @@ export interface PlacementIdentity {
   readonly apiBase: string
   /** The served identity line for this agent (`GET /v1/texts`, or the identity-home cache); null when neither could be had. */
   readonly identityLine: string | null
+  /**
+   * The served `identity_line_template` from the same texts; null when none
+   * are in hand. What the checks recognise an unmarked block (one an earlier
+   * release wrote, with no handle line) by, in the words served today.
+   * Writing does not need it: the block is found by its fences.
+   */
+  readonly identityLineTemplate: string | null
 }
 
 export const TOML_START = '# agentchat:start'
@@ -335,8 +346,11 @@ export function placeIdentityLine(handle: string, identityLine: string | null): 
     }
   }
   try {
-    const current = anchorIsCurrentAt(anchorFile(), identityLine)
-    if (!current) writeAnchor(anchorFile(), renderAnchorBlock(identityLine), handle)
+    // Current = exactly this line and handle, and no second AgentChat block.
+    // Otherwise the block is rewritten in place of the first one found (any
+    // shape an earlier release wrote), every other one removed.
+    const current = anchorIsCurrentAt(anchorFile(), identityLine, handle)
+    if (!current) writeAnchor(anchorFile(), renderAnchorBlock(identityLine, handle), handle)
     return { name: 'identity', status: current ? 'ok' : 'changed', detail: `identity line for @${handle} in ${anchorFile()}` }
   } catch (err) {
     return { name: 'identity', status: 'failed', detail: `could not write the identity line to ${anchorFile()}: ${String(err)}` }
@@ -354,7 +368,7 @@ export function placeOffer(): PlacementStep {
   }
 }
 
-// ─── legacy wiring from the pre-doorbell releases ───────────────────────────
+// ─── legacy wiring from the hook-based releases before the listener ─────────
 
 interface HookLeaf {
   command?: unknown
@@ -508,9 +522,11 @@ export interface PlacementCheck {
 export function checkPlacement(identity: PlacementIdentity | null, manual: ServedManual | null): PlacementCheck[] {
   const checks: PlacementCheck[] = []
   if (identity) {
-    const claimed = readAnchorHandleAt(anchorFile())
+    // The template recognises a block an earlier release wrote in today's
+    // served words (no handle line), so it reads as older text, not missing.
+    const claimed = readAnchorHandleAt(anchorFile(), identity.identityLineTemplate)
     // null: the served texts were unavailable, so only the handle can be checked.
-    const current = identity.identityLine === null ? null : anchorIsCurrentAt(anchorFile(), identity.identityLine)
+    const current = identity.identityLine === null ? null : anchorIsCurrentAt(anchorFile(), identity.identityLine, identity.handle)
     checks.push({
       name: 'identity',
       ok: current === true || (current === null && claimed === identity.handle),

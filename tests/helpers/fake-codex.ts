@@ -8,8 +8,9 @@ export interface FakeCodex {
 }
 
 /**
- * A deterministic `codex` for tests. Models exactly the surfaces the doorbell
- * uses — `--version`, `login status`, and `exec` headless runs — so nothing
+ * A deterministic `codex` for tests. Models exactly the surfaces the
+ * integration's listener uses — `--version`, `login status`, and `exec`
+ * headless runs — so nothing
  * here reaches a developer's real Codex installation or sign-in.
  *
  * Env knobs read by the fake at run time:

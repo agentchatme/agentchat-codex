@@ -4,6 +4,9 @@ import {
   alwaysOnState,
   clearAlwaysOnWanted,
   clearAlwaysOnOptOut,
+  INTEGRATION_ENV,
+  INTEGRATION_ENV_LEGACY,
+  INTEGRATION_ENV_LEGACY_REMOVAL,
   integrationDisabled,
   integrationDisabledBy,
   formatIntegrationStatus,
@@ -16,9 +19,11 @@ import { codexHome, identityHome, invocation, serviceLabel, LABEL } from './host
 import { formatPlacement, placeAll, removePlacement } from './placement.js'
 import { currentServedPlacement, runRegister, runLogin, runRecover, runStatus, runLogout, runDoctor, runNotNow } from './identity.js'
 import { inspectCodexRuntime } from './runner.js'
-import { ensureDoorbellService, removeDoorbellService, stableDaemonPath } from './service.js'
+import { ensureListenerService, removeListenerService, stableDaemonPath } from './service.js'
 import { VERSION } from './version.js'
 
+// The switch names and the day the previous one stops being read are
+// agent-core's (contract v1, section 7), so this text cannot outlive the reader.
 const USAGE = `agentchat-codex ${VERSION} — the AgentChat integration for Codex
 
 Usage:
@@ -42,7 +47,9 @@ two of you can DM each other — and it has its own front door:
 
 Switches (captured into the service at \`daemon install\`):
   AGENTCHAT_RUN_PROFILE=answer|work|full   what a headless run may do (default answer)
-  AGENTCHAT_INTEGRATION=off                hold no socket, start no run; tools + manual stay (AGENTCHAT_DOORBELL=off still works this release)
+  ${INTEGRATION_ENV}=off                hold no socket, start no run; tools + manual stay
+                                           (${INTEGRATION_ENV_LEGACY}=off, the previous name, is still read until ${INTEGRATION_ENV_LEGACY_REMOVAL};
+                                           ${INTEGRATION_ENV} wins when both are set)
   AGENTCHAT_RUN_BUDGET_MS                  kill a run past this (default 600000)
   AGENTCHAT_API_KEY / AGENTCHAT_API_BASE   override the stored identity
 `
@@ -156,7 +163,7 @@ async function runInstall(): Promise<number> {
   let service: 'enabled' | 'off-by-choice' | 'failed' = 'enabled'
   let serviceDetail = ''
   if (!failed) {
-    const ensured = ensureDoorbellService()
+    const ensured = ensureListenerService()
     if (ensured.ok) service = 'enabled'
     else if (ensured.detail === 'switched off by the user') service = 'off-by-choice'
     else {
@@ -192,7 +199,7 @@ function runUninstall(): number {
   const warnings: string[] = []
   let serviceRemoved = true
   try {
-    removeDoorbellService()
+    removeListenerService()
     clearAlwaysOnWanted(home)
   } catch (err) {
     serviceRemoved = false
@@ -232,7 +239,7 @@ function runDaemonCmd(sub: string | undefined): number {
     case 'install':
     case 'enable': {
       clearAlwaysOnOptOut(home)
-      const r = ensureDoorbellService({ force: true })
+      const r = ensureListenerService({ force: true })
       if (!r.ok) {
         console.error(`Could not turn on the integration daemon: ${r.detail}`)
         return 1
@@ -245,7 +252,7 @@ function runDaemonCmd(sub: string | undefined): number {
     case 'disable':
     case 'uninstall': {
       try {
-        removeDoorbellService()
+        removeListenerService()
       } catch (err) {
         console.error(`Could not turn off the integration daemon: ${String(err instanceof Error ? err.message : err)}`)
         return 1

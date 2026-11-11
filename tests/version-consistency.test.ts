@@ -9,9 +9,8 @@ import * as path from 'node:path'
 // on the tag matching package.json — so a stale version.ts sails through and
 // every user is told the wrong number.
 //
-// AgentChat release versions move append-only: add one digit to the current
-// patch component when a release is approved. The founder owns any
-// minor/major transition.
+// The number itself follows VERSIONING.md (minor +1 for rebuilt or added
+// behaviour, patch +1 for fixes; set at the release step).
 
 const ROOT = path.join(__dirname, '..')
 const read = (rel: string): string => fs.readFileSync(path.join(ROOT, rel), 'utf-8')
