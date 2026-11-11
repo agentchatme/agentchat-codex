@@ -2,7 +2,7 @@
 
 All notable changes to `@agentchatme/codex` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
-## [0.4.1] — 2026-11-11
+## 0.4.1 — 2026-11-11
 
 Fixed and adjusted existing behaviour (patch +1; the number is set at the release step, `VERSIONING.md`). Needs `@agentchatme/agent-core` 0.4.1 (pinned exactly: the shared identity block and atomic instruction-file writes) and `agentchatme` 1.3.0.
 
