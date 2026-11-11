@@ -74,10 +74,11 @@ export interface PlacementIdentity {
   /** The served identity line for this agent (`GET /v1/texts`, or the identity-home cache); null when neither could be had. */
   readonly identityLine: string | null
   /**
-   * The served `identity_line_template` from the same texts; null when none
-   * are in hand. What the checks recognise an unmarked block (one an earlier
-   * release wrote, with no handle line) by, in the words served today.
-   * Writing does not need it: the block is found by its fences.
+   * The served `identity_line_template` from the same texts. What the checks
+   * recognise an unmarked block (one an earlier release wrote, with no handle
+   * line) by, in the words served today. Null when no texts are in hand, and
+   * on the write-only path (`place`): writing does not need it, because the
+   * block is found by its fences.
    */
   readonly identityLineTemplate: string | null
 }
@@ -527,9 +528,14 @@ export function checkPlacement(identity: PlacementIdentity | null, manual: Serve
     const claimed = readAnchorHandleAt(anchorFile(), identity.identityLineTemplate)
     // null: the served texts were unavailable, so only the handle can be checked.
     const current = identity.identityLine === null ? null : anchorIsCurrentAt(anchorFile(), identity.identityLine, identity.handle)
+    // This agent's block in older words (or without the handle line) still
+    // tells the agent who it is: not current, nothing broken — a WARN (`–`),
+    // as the shared doctor reports it. A wrong handle or no block is a FAIL.
+    const older = current === false && claimed === identity.handle
     checks.push({
       name: 'identity',
       ok: current === true || (current === null && claimed === identity.handle),
+      ...(older ? { verdict: 'WARN' as const } : {}),
       detail: current === true
         ? `identity line for @${identity.handle} in ${anchorFile()}`
         : current === null && claimed === identity.handle

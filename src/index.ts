@@ -51,7 +51,9 @@ Switches (captured into the service at \`daemon install\`):
                                            (${INTEGRATION_ENV_LEGACY}=off, the previous name, is still read until ${INTEGRATION_ENV_LEGACY_REMOVAL};
                                            ${INTEGRATION_ENV} wins when both are set)
   AGENTCHAT_RUN_BUDGET_MS                  kill a run past this (default 600000)
-  AGENTCHAT_API_KEY / AGENTCHAT_API_BASE   override the stored identity
+  AGENTCHAT_RUN_CWD                        the run's working root (default $CODEX_HOME/agentchat/daemon-workdir)
+  AGENTCHAT_API_BASE                       override the server
+  AGENTCHAT_API_KEY                        override the stored key (never captured into the service)
 `
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {

@@ -428,13 +428,6 @@ describe('there is no way to address another agent', () => {
     expect(out.stdout.toLowerCase()).toContain('separate agentchat agent')
   })
 
-  it('--help says how long the switch’s previous name is still read, and which name wins', async () => {
-    // Compatibility note in the help: the previous name, and its removal day, come from agent-core.
-    const out = (await run(['--help'])).stdout.replace(/\s+/g, ' ')
-    expect(out).toContain(`${INTEGRATION_ENV_LEGACY}=off, the previous name, is still read until ${INTEGRATION_ENV_LEGACY_REMOVAL}; ${INTEGRATION_ENV} wins when both are set`)
-    expect(out).not.toContain('this release')
-  })
-
   it('keeps the user’s own AGENTS.md content throughout', async () => {
     fs.writeFileSync(agentsMd(), '# My notes\n')
     giveCodexAnIdentity()
@@ -480,6 +473,21 @@ describe('doctor', () => {
   })
 })
 
+describe('--help', () => {
+  it('says how long the switch’s previous name is still read, and which name wins', async () => {
+    // Compatibility note in the help: the previous name, and its removal day, come from agent-core.
+    const out = (await run(['--help'])).stdout.replace(/\s+/g, ' ')
+    expect(out).toContain(`${INTEGRATION_ENV_LEGACY}=off, the previous name, is still read until ${INTEGRATION_ENV_LEGACY_REMOVAL}; ${INTEGRATION_ENV} wins when both are set`)
+    expect(out).not.toContain('this release')
+  })
+
+  it('names every switch the service captures, and says the key is not one of them', async () => {
+    const out = (await run(['--help'])).stdout
+    for (const name of ['AGENTCHAT_RUN_PROFILE', INTEGRATION_ENV, 'AGENTCHAT_RUN_BUDGET_MS', 'AGENTCHAT_RUN_CWD', 'AGENTCHAT_API_BASE']) expect(out).toContain(name)
+    expect(out).toMatch(/AGENTCHAT_API_KEY\s+override the stored key \(never captured into the service\)/)
+  })
+})
+
 // ─── The identity block an earlier release wrote ────────────────────────────
 //
 // 0.4.0 wrote the fences and the served line with no handle line, and moved
@@ -491,6 +499,9 @@ describe('doctor', () => {
 describe('a block the previous release wrote', () => {
   const USER_BEFORE = '# My notes\n\nAlways answer in English.\n'
   const USER_AFTER = '## Added after the install\n\nKeep runs short.\n'
+  // One blank line on each side of the block, as earlier releases wrote it:
+  // the kit makes the blank lines that touch the block exactly one, so with
+  // this spacing the whole file outside the block is byte for byte the same.
   const fileWith = (block: string): string => `${USER_BEFORE}\n${block}\n\n${USER_AFTER}`
 
   function writePreviousRelease(line: (h: string) => string = SERVED_LINE): void {
@@ -502,7 +513,7 @@ describe('a block the previous release wrote', () => {
     expect((await run([])).code).toBe(0)
     writePreviousRelease()
     const status = await run(['status'])
-    expect(status.stdout).toContain(`✗ identity: ${agentsMd()} carries an older identity text`)
+    expect(status.stdout).toContain(`– identity: ${agentsMd()} carries an older identity text`)
     const doctor = await run(['doctor'])
     expect(doctor.stdout).toContain(`WARN identity-line: ${agentsMd()} carries an older identity text for @codex-agent — repair with \`npx -y @agentchatme/codex doctor --fix\``)
     expect(fs.readFileSync(agentsMd(), 'utf-8')).toBe(fileWith(PREVIOUS_RELEASE_BLOCK('codex-agent'))) // reporting writes nothing
@@ -530,7 +541,7 @@ describe('a block the previous release wrote', () => {
     expect((await run([])).code).toBe(0)
     writePreviousRelease(today)
     const status = await run(['status'])
-    expect(status.stdout).toContain(`✗ identity: ${agentsMd()} carries an older identity text`)
+    expect(status.stdout).toContain(`– identity: ${agentsMd()} carries an older identity text`)
     expect(status.stdout).not.toContain('identity line missing')
     expect((await run(['doctor'])).stdout).toContain(`carries an older identity text for @codex-agent`)
     expect((await run(['doctor', '--fix'])).stdout).toContain('repaired → @codex-agent')

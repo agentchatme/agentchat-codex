@@ -10,8 +10,8 @@ export interface FakeCodex {
 /**
  * A deterministic `codex` for tests. Models exactly the surfaces the
  * integration's listener uses — `--version`, `login status`, and `exec`
- * headless runs — so nothing
- * here reaches a developer's real Codex installation or sign-in.
+ * headless runs — so nothing here reaches a developer's real Codex
+ * installation or sign-in.
  *
  * Env knobs read by the fake at run time:
  *   FAKE_CODEX_LOGGED_OUT=1          `login status` exits 1
