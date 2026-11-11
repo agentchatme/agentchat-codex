@@ -1,11 +1,11 @@
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { MANUAL_FILENAME, MANUAL_SKILL_NAME, serviceLabelFor, type IntegrationClient } from '@agentchatme/agent-core'
+import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, RUN_BUDGET_ENV, RUN_PROFILE_ENV, MANUAL_FILENAME, MANUAL_SKILL_NAME, serviceLabelFor, type IntegrationClient } from '@agentchatme/agent-core'
 import { VERSION } from './version.js'
 
 // ─── The only file in this repo that knows a host exists ────────────────────
 //
-// Everything host-specific about the Codex doorbell is here: where the
+// Everything host-specific about the Codex integration is here: where the
 // identity lives, which file carries the identity line, where Codex keeps
 // skills, config and its `.env`. The rest of the package reads these;
 // @agentchatme/agent-core knows none of them.
@@ -35,7 +35,7 @@ export function configPath(): string {
   return path.join(codexHome(), 'config.toml')
 }
 
-/** Pre-doorbell releases wrote lifecycle hooks here; upgrades remove them. */
+/** The hook-based releases before the listener wrote lifecycle hooks here; upgrades remove them. */
 export function hooksPath(): string {
   return path.join(codexHome(), 'hooks.json')
 }
@@ -77,7 +77,7 @@ export const CLIENT: IntegrationClient = { runtime: 'codex', version: VERSION }
 export const SERVICE_BASE_LABEL = 'agentchatd-codex'
 
 /**
- * The doorbell service's label for THIS config. `launchctl` / `systemctl
+ * The listener service's label for THIS config. `launchctl` / `systemctl
  * --user` address the user's domain whatever HOME or CODEX_HOME say, so a
  * relocated CODEX_HOME gets its own label (`agentchatd-codex-<8 hex>`) and can
  * never address the default config's service; `~/.codex` keeps the plain
@@ -115,14 +115,20 @@ export function hostCopy(): { invoke: string; label: string } {
 
 /**
  * Env the service must see. A launchd/systemd service does NOT inherit the
- * login shell, so the doorbell's switches are captured at install time:
+ * login shell, so the listener's switches are captured at install time:
  * `AGENTCHAT_RUN_PROFILE=work npx -y @agentchatme/codex daemon install`.
+ *
+ * `INTEGRATION_ENV_LEGACY` is the switch's previous name, captured too
+ * (compatibility only): the daemon still reads it until 2027-02-01 (agent
+ * contract v1, section 7), so an operator's `off` under the old name must
+ * reach the unit. Named through agent-core's constant, not a string, so the
+ * day agent-core drops it this build breaks instead of keeping dead code.
  */
 export function serviceEnv(): Record<string, string> {
   const env: Record<string, string> = {}
   const codexHomeEnv = process.env['CODEX_HOME']?.trim()
   if (codexHomeEnv !== undefined && codexHomeEnv.length > 0) env['CODEX_HOME'] = codexHomeEnv
-  for (const key of ['AGENTCHAT_RUN_PROFILE', 'AGENTCHAT_INTEGRATION', 'AGENTCHAT_DOORBELL', 'AGENTCHAT_RUN_BUDGET_MS', 'AGENTCHAT_RUN_CWD', 'AGENTCHAT_API_BASE']) {
+  for (const key of [RUN_PROFILE_ENV, INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, RUN_BUDGET_ENV, 'AGENTCHAT_RUN_CWD', 'AGENTCHAT_API_BASE']) {
     const value = process.env[key]?.trim()
     if (value !== undefined && value.length > 0) env[key] = value
   }

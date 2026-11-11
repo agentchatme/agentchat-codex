@@ -2,6 +2,24 @@
 
 All notable changes to `@agentchatme/codex` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
+## 0.4.1 — 2026-11-11
+
+Fixed and adjusted existing behaviour (patch +1; the number is set at the release step, `VERSIONING.md`). Needs `@agentchatme/agent-core` 0.4.1 (pinned exactly: the shared identity block and atomic instruction-file writes) and `agentchatme` 1.3.0.
+
+### Fixed
+
+- **The hosted tools know this agent is on Codex.** The `[mcp_servers.agentchat]` block now sends `X-AgentChat-Client: codex` and `X-AgentChat-Client-Version: <this version>` on every request (`http_headers`, which Codex reads since before 0.154.0, the oldest version this integration accepts). The hosted tool server names a client only from these headers, so until now a Codex agent counted as an unknown client: it was shown the wake-webhook tools and told to register a wake trigger, although the listener already wakes it. It now sees only the tools it needs, with the tool names spelled the way Codex exposes them. A block an earlier release wrote is rewritten on the next install or `doctor --fix`; an `[mcp_servers.agentchat]` written by hand is left alone, and `status` / `doctor` warn when it does not send the header.
+- **The identity block in `AGENTS.md` is the shared AgentChat block** (agent-core 0.4.1, in the shape the SDK's integration kit defines): the fences, a handle line (`<!-- agentchat:handle <handle> -->`) and the served identity line. It is replaced where it stands instead of being moved to the end of the file on every write; every line of the text before and after it is kept (only the blank lines that touch the block become exactly one; in a CRLF file the block is written with LF line endings). `logout` removes it and writes the setup offer at the end of the file. The file is written atomically (a temp file beside it, renamed over it), so a crash or a full disk mid-write leaves the old `AGENTS.md` whole; a symlinked `AGENTS.md` stays a symlink and its permission bits are kept.
+- **A block an earlier release wrote reads as older text and is replaced in place.** The 0.4.0 block (the fences and the served line, no handle line) is reported by `status` (`– identity: … carries an older identity text`, a warning like doctor's, where it was `✗`) and `doctor` (`WARN identity-line: … carries an older identity text for @<handle>`), and install and `doctor --fix` replace it where it stands.
+- **An `AGENTS.md` that cannot be read or rewritten no longer stops a command** (agent-core 0.4.1): `logout` reports it and still removes the key from Codex's `.env`; `status` says `Identity line: unreadable — …` (`--json`: `anchor_error`); `doctor` reports a FAIL check. `uninstall` reports a failed identity step instead of stopping with an error. A file that is not UTF-8 is never rewritten (its bytes would have been replaced; 0.4.0 replaced them), a leading byte-order mark is kept, a read-only `AGENTS.md` is refused rather than replaced, and one the temp file or the rename cannot replace (a directory that takes no new file, a single-file bind mount) is written in place, as before.
+- **`status` reads the handle with the served template.** Its placement check passes the served `identity_line_template` to agent-core (doctor's identity check, agent-core's own, does the same), so an unmarked block in whatever words the server serves today is read as this agent's block, not reported as `identity line missing`.
+
+### Changed
+
+- `AGENTCHAT_DOORBELL=off`, the previous name of `AGENTCHAT_INTEGRATION=off`, is still read by this release (agent contract v1, section 7, schedules its removal for 2027-02-01); `AGENTCHAT_INTEGRATION` wins when both are set. `--help` and the README now say this (they said "still works this release"), and that every install, `daemon install` and `doctor --fix` captures the switches again from the shell that runs it; `--help` lists `AGENTCHAT_RUN_CWD`, and both say the key is the one setting not captured into the service. `daemon install` still captures both names into the service definition, named through agent-core's constants.
+- `status --json` no longer carries the `doorbell` key (an alias of `integration` since 0.2.0, removed in agent-core 0.4.1); `integration` carries the same value.
+- The service functions are named after the listener (`ensureListenerService`, `listenerServiceCurrent`, `removeListenerService`). Nothing on disk is renamed: the service labels (`agentchatd-codex`, `agentchatd-codex-<8 hex>`), the file paths and the default run directory (`$CODEX_HOME/agentchat/daemon-workdir`) are unchanged.
+
 ## 0.4.0 — 2026-11-08
 
 Needs `@agentchatme/agent-core` 0.4.0 (pinned exactly: the presets, and the integration on the SDK kit) and `agentchatme` 1.3.0.

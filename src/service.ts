@@ -1,4 +1,4 @@
-// ─── Registering the doorbell service ───────────────────────────────────────
+// ─── Registering the listener service ───────────────────────────────────────
 //
 // Installation and authentication are DIFFERENT lifecycles. Registering the
 // service needs no credentials: the daemon is resident, idles when there is no
@@ -53,8 +53,8 @@ function serviceOpts() {
   return { label: serviceLabel(), home: identityHome(), entry: stableDaemonPath(), env: serviceEnv(), supersedes: supersededServiceLabels() }
 }
 
-/** Register the doorbell service. Idempotent, best-effort, credential-free. Never throws. */
-export function ensureDoorbellService(opts: { force?: boolean } = {}): EnsureResult {
+/** Register the listener service (the resident daemon). Idempotent, best-effort, credential-free. Never throws. */
+export function ensureListenerService(opts: { force?: boolean } = {}): EnsureResult {
   const home = identityHome()
   if (!opts.force && alwaysOnOptedOut(home)) return { ok: false, detail: 'switched off by the user' }
   try {
@@ -72,7 +72,7 @@ export function ensureDoorbellService(opts: { force?: boolean } = {}): EnsureRes
   }
 }
 
-export function doorbellServiceCurrent(): boolean {
+export function listenerServiceCurrent(): boolean {
   const home = identityHome()
   const service = serviceOpts()
   return alwaysOnWanted(home) && fs.existsSync(service.entry) && readAlwaysOnInstalledVersion(home) === VERSION && serviceDefinitionCurrent(service)
@@ -82,7 +82,7 @@ export function doorbellServiceCurrent(): boolean {
  * Remove the service. The only thing that does. Throws — and removes nothing
  * — when the service under this config's label serves another identity home.
  */
-export function removeDoorbellService(): void {
+export function removeListenerService(): void {
   const home = identityHome()
   uninstallService({ label: serviceLabel(), home, supersedes: supersededServiceLabels() })
   clearAlwaysOnInstalledVersion(home)
