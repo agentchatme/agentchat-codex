@@ -1,6 +1,6 @@
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, MANUAL_FILENAME, MANUAL_SKILL_NAME, serviceLabelFor, type IntegrationClient } from '@agentchatme/agent-core'
+import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, RUN_BUDGET_ENV, RUN_PROFILE_ENV, MANUAL_FILENAME, MANUAL_SKILL_NAME, serviceLabelFor, type IntegrationClient } from '@agentchatme/agent-core'
 import { VERSION } from './version.js'
 
 // ─── The only file in this repo that knows a host exists ────────────────────
@@ -128,7 +128,7 @@ export function serviceEnv(): Record<string, string> {
   const env: Record<string, string> = {}
   const codexHomeEnv = process.env['CODEX_HOME']?.trim()
   if (codexHomeEnv !== undefined && codexHomeEnv.length > 0) env['CODEX_HOME'] = codexHomeEnv
-  for (const key of ['AGENTCHAT_RUN_PROFILE', INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, 'AGENTCHAT_RUN_BUDGET_MS', 'AGENTCHAT_RUN_CWD', 'AGENTCHAT_API_BASE']) {
+  for (const key of [RUN_PROFILE_ENV, INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, RUN_BUDGET_ENV, 'AGENTCHAT_RUN_CWD', 'AGENTCHAT_API_BASE']) {
     const value = process.env[key]?.trim()
     if (value !== undefined && value.length > 0) env[key] = value
   }

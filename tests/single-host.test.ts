@@ -8,6 +8,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, INTEGRATION_ENV_LEGACY_REMOVAL, MANUAL, manualVersion } from '@agentchatme/agent-core'
+import { VERSION } from '../src/version.js'
 import { installFakeCodex, type FakeCodex } from './helpers/fake-codex.js'
 
 const exec = promisify(execFile)
@@ -80,11 +81,16 @@ const configToml = (): string => path.join(codexDir(), 'config.toml')
 const dotEnv = (): string => path.join(codexDir(), '.env')
 const skill = (): string => path.join(codexDir(), 'skills', 'agentchat', 'SKILL.md')
 
+/** The client identity the hosted tools read, on every request (`http_headers`, codex-rs since before 0.154.0). */
+const CLIENT_HEADERS_LINE = `http_headers = { "X-AgentChat-Client" = "codex", "X-AgentChat-Client-Version" = "${VERSION}" }`
+
 const EXPECTED_BLOCK = [
   '# agentchat:start',
   '[mcp_servers.agentchat]',
   'url = "http://127.0.0.1:9/mcp"',
   'bearer_token_env_var = "AGENTCHAT_API_KEY"',
+  '# Names this runtime to the hosted tools: no wake-webhook tools for an agent the listener wakes.',
+  CLIENT_HEADERS_LINE,
   'startup_timeout_sec = 30',
   '# Auto-run the AgentChat tools without a prompt, scoped to THIS server only.',
   'default_tools_approval_mode = "approve"',
@@ -477,7 +483,7 @@ describe('--help', () => {
   it('says how long the switch’s previous name is still read, and which name wins', async () => {
     // Compatibility note in the help: the previous name, and its removal day, come from agent-core.
     const out = (await run(['--help'])).stdout.replace(/\s+/g, ' ')
-    expect(out).toContain(`${INTEGRATION_ENV_LEGACY}=off, the previous name, is still read until ${INTEGRATION_ENV_LEGACY_REMOVAL}; ${INTEGRATION_ENV} wins when both are set`)
+    expect(out).toContain(`${INTEGRATION_ENV_LEGACY}=off, the previous name, is still read; its removal is scheduled for ${INTEGRATION_ENV_LEGACY_REMOVAL}; ${INTEGRATION_ENV} wins when both are set`)
     expect(out).not.toContain('this release')
   })
 
@@ -574,5 +580,93 @@ describe('the published bundle is self-contained', () => {
     // Compatibility check: the retired never-ack socket class must be absent.
     expect(bundle).not.toMatch(/DoorbellSocket|x-agentchat-capabilities/)
     expect(bundle).not.toMatch(/AGENTCHAT_TURN_OUTCOME|stream-json/)
+  })
+})
+
+// ─── The hosted tools are told this agent is on Codex ───────────────────────
+//
+// The hosted tool server reads the client's name from `X-AgentChat-Client`
+// (and its version from `X-AgentChat-Client-Version`), never from the MCP
+// handshake. Without it, a Codex agent counts as an unknown client and is
+// shown the wake-webhook tools — a second way of being woken that the
+// listener makes unnecessary. The block sends both on every request.
+
+describe('the hosted tools are told this agent is on Codex', () => {
+  /** What 0.4.0 wrote: the same fenced block without the client headers. */
+  const BLOCK_040 = EXPECTED_BLOCK.split('\n')
+    .filter((line) => !line.startsWith('http_headers') && !line.startsWith('# Names this runtime'))
+    .join('\n')
+
+  it('the header names this package’s own version', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8')) as { version: string }
+    expect(VERSION).toBe(pkg.version)
+    expect(EXPECTED_BLOCK).toContain(`"X-AgentChat-Client" = "codex", "X-AgentChat-Client-Version" = "${pkg.version}"`)
+  })
+
+  it('a block an earlier release wrote (no client headers) reads as older and install rewrites it, keeping the rest of config.toml', { timeout: 30_000 }, async () => {
+    giveCodexAnIdentity()
+    fs.writeFileSync(configToml(), `# my config\nmodel = "o4"\n\n${BLOCK_040}\n\n[mcp_servers.other]\ncommand = "other"\n`)
+    expect((await run(['status'])).stdout).toContain(`✗ mcp: the agentchat block in ${configToml()} is from an older release`)
+    expect((await run([])).code).toBe(0)
+    expect(fs.readFileSync(configToml(), 'utf-8')).toBe(`# my config\nmodel = "o4"\n\n[mcp_servers.other]\ncommand = "other"\n\n${EXPECTED_BLOCK}\n`)
+    expect((await run(['status'])).stdout).toContain(`✓ mcp: [mcp_servers.agentchat] → hosted tools, bearer token from AGENTCHAT_API_KEY, named as Codex ${VERSION}`)
+  })
+
+  it('doctor --fix brings an older block current too', { timeout: 30_000 }, async () => {
+    giveCodexAnIdentity()
+    expect((await run([])).code).toBe(0)
+    fs.writeFileSync(configToml(), `${BLOCK_040}\n`)
+    expect((await run(['doctor'])).stdout).toMatch(/FAIL hosted-mcp: the agentchat block in .* is from an older release — run `npx -y @agentchatme\/codex doctor --fix`/)
+    await run(['doctor', '--fix'])
+    expect(fs.readFileSync(configToml(), 'utf-8')).toBe(`${EXPECTED_BLOCK}\n`)
+  })
+
+  it('a hand-written [mcp_servers.agentchat] is left alone; status and doctor say when it does not send the header, and stay quiet when it does', { timeout: 30_000 }, async () => {
+    giveCodexAnIdentity()
+    const hand = '[mcp_servers.agentchat]\nurl = "https://api.agentchat.me/mcp"\nbearer_token_env_var = "AGENTCHAT_API_KEY"\n'
+    fs.writeFileSync(configToml(), hand)
+    await run([])
+    await run(['doctor', '--fix'])
+    expect(fs.readFileSync(configToml(), 'utf-8')).toBe(hand)
+    const status = (await run(['status'])).stdout
+    expect(status).toContain(`– mcp: [mcp_servers.agentchat] is managed by hand in ${configToml()} and does not send X-AgentChat-Client`)
+    expect(status).toContain(CLIENT_HEADERS_LINE)
+    expect((await run(['doctor'])).stdout).toMatch(/WARN hosted-mcp: \[mcp_servers\.agentchat\] is managed by hand in .* does not send X-AgentChat-Client/)
+
+    // The header written by hand, as a sub-table, with the name in another case: recognised, not touched.
+    const withHeader = `${hand}\n[mcp_servers.agentchat.http_headers]\n"x-agentchat-client" = "codex"\n`
+    fs.writeFileSync(configToml(), withHeader)
+    const quiet = (await run(['status'])).stdout
+    expect(quiet).toContain(`✓ mcp: [mcp_servers.agentchat] is managed by hand in ${configToml()}`)
+    expect(quiet).not.toContain('does not send')
+    expect(fs.readFileSync(configToml(), 'utf-8')).toBe(withHeader)
+  })
+})
+
+describe('an AGENTS.md that cannot be read', () => {
+  const NOT_UTF8 = Buffer.concat([Buffer.from('# R'), Buffer.from([0xe9]), Buffer.from('sum\n')])
+
+  it('is never rewritten, and stops neither status, doctor --fix nor uninstall', { timeout: 60_000 }, async () => {
+    giveCodexAnIdentity()
+    expect((await run([])).code).toBe(0)
+    fs.writeFileSync(agentsMd(), NOT_UTF8)
+
+    const status = (await run(['status'])).stdout
+    expect(status).toMatch(/✗ identity: cannot read .*not UTF-8/)
+    expect(status).toContain('mcp:')
+    expect(status).toContain('manual:')
+
+    // The service repair still runs: the durable daemon copy comes back.
+    const daemon = path.join(home(), 'bin', 'agentchat-daemon.mjs')
+    fs.rmSync(daemon)
+    const doctor = (await run(['doctor', '--fix'])).stdout
+    expect(doctor).toMatch(/FAIL identity-line: cannot read .*not UTF-8/)
+    expect(doctor).toContain('hosted-mcp')
+    expect(fs.existsSync(daemon)).toBe(true)
+
+    const uninstall = await run(['uninstall'])
+    expect(uninstall.stdout + uninstall.stderr).not.toMatch(/\n\s+at \S+ \(/)
+    expect(uninstall.stdout).toMatch(/✗ identity: could not remove the AgentChat block from .*not UTF-8/)
+    expect(fs.readFileSync(agentsMd()).equals(NOT_UTF8)).toBe(true)
   })
 })

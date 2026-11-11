@@ -5,6 +5,7 @@ import {
   createIdentityCommands,
   fetchServedTexts,
   integrationDisabledBy,
+  INTEGRATION_ENV,
   integrationStatusAge,
   probeHostedMcp,
   readCredentials,
@@ -165,7 +166,7 @@ function integrationCheck(): DoctorCheck {
   if (status === null) return { name: 'integration', verdict: 'WARN', detail: 'no status written yet — the daemon has not run, or is still starting' }
   const age = integrationStatusAge(status) ?? Number.POSITIVE_INFINITY
   if (age > 3 * 60_000) return { name: 'integration', verdict: 'FAIL', detail: `status last written ${Math.round(age / 60_000)} min ago — the daemon is not running` }
-  if (status.socket === 'off') return { name: 'integration', verdict: 'PASS', detail: `${integrationDisabledBy() ?? 'AGENTCHAT_INTEGRATION'}=off — resident, holding no socket` }
+  if (status.socket === 'off') return { name: 'integration', verdict: 'PASS', detail: `${integrationDisabledBy() ?? INTEGRATION_ENV}=off — resident, holding no socket` }
   if (status.socket === 'ready') {
     const texts = status.texts?.source ?? 'none'
     return {

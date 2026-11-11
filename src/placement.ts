@@ -3,6 +3,7 @@ import * as path from 'node:path'
 import {
   atomicWriteFile,
   checkManual,
+  clientHeadersOf,
   describeManualSync,
   hostedMcpUrl,
   log,
@@ -18,7 +19,7 @@ import {
   type ManualSyncResult,
   type ServedManual,
 } from '@agentchatme/agent-core'
-import { API_KEY_ENV, MCP_SERVER_NAME, anchorFile, configPath, dotEnvPath, hooksPath, hostCopy, identityHome, skillDir, skillPath } from './host.js'
+import { API_KEY_ENV, CLIENT, MCP_SERVER_NAME, anchorFile, configPath, dotEnvPath, hooksPath, hostCopy, identityHome, skillDir, skillPath } from './host.js'
 
 // ─── Placement: the four texts, where Codex loads them ──────────────────────
 //
@@ -50,7 +51,7 @@ import { API_KEY_ENV, MCP_SERVER_NAME, anchorFile, configPath, dotEnvPath, hooks
 //    agent-core is written only when there is no file and nothing verified can
 //    be had.
 //
-// Legacy cleanup on upgrade: the four lifecycle hooks the previous release wrote
+// Legacy cleanup on upgrade: the four lifecycle hooks the hook-based releases wrote
 // into `hooks.json`, the stable CLI bundle under the identity home, and the old
 // on-disk manual at `<home>/SKILL.md`. Receiving no longer needs hooks.
 
@@ -181,12 +182,36 @@ export function removeKey(): PlacementStep {
 
 // ─── the tools: [mcp_servers.agentchat] in config.toml ──────────────────────
 
+function tomlBasicString(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+}
+
+/** The header the hosted tool server reads the client's name from (core `client-context.ts`). */
+export const CLIENT_HEADER = 'X-AgentChat-Client'
+
+/**
+ * `http_headers = { "X-AgentChat-Client" = "codex", "X-AgentChat-Client-Version" = "<this version>" }`:
+ * the client identity (agent-core's `clientHeadersOf`, the names the server
+ * reads) on every request Codex makes to the hosted tools. It is how the
+ * server knows this agent is on Codex, woken by its listener, and so shows
+ * it no wake-webhook tools and spells the tool names the way Codex exposes
+ * them. Codex reads `http_headers` for a streamable-HTTP server since before
+ * the oldest version this integration accepts (`MIN_CODEX_VERSION`, 0.154.0:
+ * codex-rs `config/src/mcp_types.rs`, `rmcp-client/src/utils.rs`).
+ */
+export function mcpHttpHeadersLine(): string {
+  const pairs = Object.entries(clientHeadersOf(CLIENT)).map(([name, value]) => `${tomlBasicString(name)} = ${tomlBasicString(value)}`)
+  return `http_headers = { ${pairs.join(', ')} }`
+}
+
 export function mcpBlock(apiBase: string): string {
   return [
     TOML_START,
     `[mcp_servers.${MCP_SERVER_NAME}]`,
     `url = "${hostedMcpUrl(apiBase)}"`,
     `bearer_token_env_var = "${API_KEY_ENV}"`,
+    '# Names this runtime to the hosted tools: no wake-webhook tools for an agent the listener wakes.',
+    mcpHttpHeadersLine(),
     'startup_timeout_sec = 30',
     '# Auto-run the AgentChat tools without a prompt, scoped to THIS server only.',
     'default_tools_approval_mode = "approve"',
@@ -213,12 +238,48 @@ export function stripTomlBlock(existing: string): string {
   return before + '\n\n' + after + (after.endsWith('\n') ? '' : '\n')
 }
 
+/**
+ * The text of a hand-written `[mcp_servers.agentchat]` outside our fence: its
+ * table and any `[mcp_servers.agentchat.*]` sub-table (`http_headers` may be
+ * written either way), or null when there is none. Read only for a hint;
+ * the entry is the user's and is never edited.
+ */
+export function handWrittenAgentchatServer(existing: string): string | null {
+  const lines: string[] = []
+  let inside = false
+  let found = false
+  for (const line of stripTomlBlock(existing).split(/\r?\n/)) {
+    const header = /^\s*\[\s*([^\]]+?)\s*\]/.exec(line)
+    if (header && !line.trimStart().startsWith('[[')) {
+      const name = header[1]!.replace(/\s+/g, '')
+      inside = name === `mcp_servers.${MCP_SERVER_NAME}` || name.startsWith(`mcp_servers.${MCP_SERVER_NAME}.`)
+      found ||= inside
+    }
+    if (inside) lines.push(line)
+  }
+  return found ? lines.join('\n') : null
+}
+
+/** Whether a hand-written entry sends the client header (case-insensitive, as HTTP header names are). */
+export function handWrittenSendsClientHeader(existing: string): boolean {
+  const text = handWrittenAgentchatServer(existing)
+  return text !== null && new RegExp(CLIENT_HEADER, 'i').test(text)
+}
+
 /** A hand-written `[mcp_servers.agentchat]` outside our fence would collide (duplicate TOML table). */
 export function hasUnfencedAgentchatServer(existing: string): boolean {
   return new RegExp(`^\\s*\\[mcp_servers\\.${MCP_SERVER_NAME}\\]`, 'm').test(stripTomlBlock(existing))
 }
 
 export type McpBlockState = 'current' | 'stale' | 'missing' | 'foreign'
+
+function readConfigText(): string {
+  try {
+    return fs.readFileSync(configPath(), 'utf-8')
+  } catch {
+    return ''
+  }
+}
 
 export function inspectMcpBlock(apiBase: string): McpBlockState {
   let config = ''
@@ -301,7 +362,7 @@ function manualStep(result: ManualSyncResult, removedLegacy: boolean): Placement
  */
 export async function placeSkill(manual: ServedManual | null, apiBase: string | null): Promise<PlacementStep> {
   const result = await syncManual({ path: skillPath(), served: manual, apiBase })
-  // The previous release kept the manual at <home>/SKILL.md, outside any
+  // The hook-based releases kept the manual at <home>/SKILL.md, outside any
   // skills directory. The skill supersedes it.
   const legacy = path.join(identityHome(), LEGACY_MANUAL)
   let removedLegacy = false
@@ -428,7 +489,7 @@ export function legacyBundlePresent(): boolean {
   return fs.existsSync(path.join(identityHome(), LEGACY_BUNDLE))
 }
 
-/** Strip the previous release's hooks and stable CLI bundle. Idempotent. */
+/** Strip the hook-based releases' hooks and stable CLI bundle. Idempotent. */
 export function removeLegacyWiring(): PlacementStep | null {
   const notes: string[] = []
   const file = hooksPath()
@@ -503,7 +564,11 @@ export function removePlacement(): PlacementStep[] {
   steps.push(removeKey())
   steps.push(removeMcp())
   steps.push(removeSkill())
-  steps.push({ name: 'identity', status: removeAnchorAt(anchorFile()) === 'removed' ? 'changed' : 'ok', detail: `${path.basename(anchorFile())} AgentChat block removed` })
+  try {
+    steps.push({ name: 'identity', status: removeAnchorAt(anchorFile()) === 'removed' ? 'changed' : 'ok', detail: `${path.basename(anchorFile())} AgentChat block removed` })
+  } catch (err) {
+    steps.push({ name: 'identity', status: 'failed', detail: `could not remove the AgentChat block from ${anchorFile()}: ${err instanceof Error ? err.message : String(err)} — remove it by hand` })
+  }
   return steps
 }
 
@@ -516,6 +581,44 @@ export interface PlacementCheck {
 }
 
 /**
+ * The identity line's check. An AGENTS.md that cannot be read (permissions,
+ * a symlink loop, not UTF-8) fails this check alone: every other check, and
+ * every repair `doctor --fix` makes, still runs.
+ */
+function identityCheck(identity: PlacementIdentity): PlacementCheck {
+  let claimed: string | null
+  let current: boolean | null
+  try {
+    // The template recognises a block an earlier release wrote in today's
+    // served words (no handle line), so it reads as older text, not missing.
+    claimed = readAnchorHandleAt(anchorFile(), identity.identityLineTemplate)
+    // null: the served texts were unavailable, so only the handle can be checked.
+    current = identity.identityLine === null ? null : anchorIsCurrentAt(anchorFile(), identity.identityLine, identity.handle)
+  } catch (err) {
+    return { name: 'identity', ok: false, verdict: 'FAIL', detail: `cannot read ${anchorFile()}: ${err instanceof Error ? err.message : String(err)}` }
+  }
+  // This agent's block in older words (or without the handle line, or next
+  // to a second AgentChat block) still tells the agent who it is: not
+  // current, nothing broken — a WARN (`–`), as the shared doctor reports it.
+  // A wrong handle or no block is a FAIL.
+  const older = current === false && claimed === identity.handle
+  return {
+    name: 'identity',
+    ok: current === true || (current === null && claimed === identity.handle),
+    ...(older ? { verdict: 'WARN' as const } : {}),
+    detail: current === true
+      ? `identity line for @${identity.handle} in ${anchorFile()}`
+      : current === null && claimed === identity.handle
+        ? `identity line for @${identity.handle} in ${anchorFile()} (served texts unavailable — currency not checked)`
+      : claimed === null
+        ? `identity line missing from ${anchorFile()}`
+        : claimed !== identity.handle
+          ? `${anchorFile()} says @${claimed} but this agent is @${identity.handle}`
+          : `${anchorFile()} carries an older identity text (or a second AgentChat block) — install or \`doctor --fix\` rewrites it`,
+  }
+}
+
+/**
  * For `status` and `doctor`: is everything where it should be? `manual` is
  * what the served texts announce (null when none are in hand), so the skill
  * reads `current (2.2.0)` or `stale (have 2.1.2, served 2.2.0)`.
@@ -523,29 +626,7 @@ export interface PlacementCheck {
 export function checkPlacement(identity: PlacementIdentity | null, manual: ServedManual | null): PlacementCheck[] {
   const checks: PlacementCheck[] = []
   if (identity) {
-    // The template recognises a block an earlier release wrote in today's
-    // served words (no handle line), so it reads as older text, not missing.
-    const claimed = readAnchorHandleAt(anchorFile(), identity.identityLineTemplate)
-    // null: the served texts were unavailable, so only the handle can be checked.
-    const current = identity.identityLine === null ? null : anchorIsCurrentAt(anchorFile(), identity.identityLine, identity.handle)
-    // This agent's block in older words (or without the handle line) still
-    // tells the agent who it is: not current, nothing broken — a WARN (`–`),
-    // as the shared doctor reports it. A wrong handle or no block is a FAIL.
-    const older = current === false && claimed === identity.handle
-    checks.push({
-      name: 'identity',
-      ok: current === true || (current === null && claimed === identity.handle),
-      ...(older ? { verdict: 'WARN' as const } : {}),
-      detail: current === true
-        ? `identity line for @${identity.handle} in ${anchorFile()}`
-        : current === null && claimed === identity.handle
-          ? `identity line for @${identity.handle} in ${anchorFile()} (served texts unavailable — currency not checked)`
-        : claimed === null
-          ? `identity line missing from ${anchorFile()}`
-          : claimed !== identity.handle
-            ? `${anchorFile()} says @${claimed} but this agent is @${identity.handle}`
-            : `${anchorFile()} carries an older identity text`,
-    })
+    checks.push(identityCheck(identity))
     const inDotEnv = readKeyFromDotEnv()
     checks.push({
       name: 'key',
@@ -564,14 +645,22 @@ export function checkPlacement(identity: PlacementIdentity | null, manual: Serve
   // what `doctor --fix` repairs.
   checks.push({ name: 'manual', ok: skill.state === 'current' || skill.state === 'unchecked', verdict: skill.verdict, detail: skill.detail })
   const mcp = inspectMcpBlock(identity?.apiBase ?? process.env['AGENTCHAT_API_BASE']?.trim() ?? 'https://api.agentchat.me')
+  const handWrittenNamesClient = mcp === 'foreign' && handWrittenSendsClientHeader(readConfigText())
   checks.push({
     name: 'mcp',
+    // A hand-written entry is the user's: nothing for this integration to
+    // repair (ok), but said — a WARN — when it does not name this runtime to
+    // the hosted tools: they then show it the wake-webhook tools, a second
+    // way of being woken it does not need.
     ok: mcp === 'current' || mcp === 'foreign',
+    ...(mcp === 'foreign' && !handWrittenNamesClient ? { verdict: 'WARN' as const } : {}),
     detail:
       mcp === 'current'
-        ? `[mcp_servers.${MCP_SERVER_NAME}] → hosted tools, bearer token from ${API_KEY_ENV}`
+        ? `[mcp_servers.${MCP_SERVER_NAME}] → hosted tools, bearer token from ${API_KEY_ENV}, named as Codex ${CLIENT.version}`
         : mcp === 'foreign'
-          ? `[mcp_servers.${MCP_SERVER_NAME}] is managed by hand in ${configPath()}`
+          ? handWrittenNamesClient
+            ? `[mcp_servers.${MCP_SERVER_NAME}] is managed by hand in ${configPath()}`
+            : `[mcp_servers.${MCP_SERVER_NAME}] is managed by hand in ${configPath()} and does not send ${CLIENT_HEADER}, so the hosted tools take this agent for an unknown client and show it the wake-webhook tools — add \`${mcpHttpHeadersLine()}\` to it`
           : mcp === 'stale'
             ? `the agentchat block in ${configPath()} is from an older release`
             : `no [mcp_servers.${MCP_SERVER_NAME}] in ${configPath()} — the agent has no AgentChat tools`,
