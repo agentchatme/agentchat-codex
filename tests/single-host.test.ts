@@ -571,15 +571,30 @@ describe('doctor: what a peer-started run may do, and whether one can start', ()
     expect(doctor.stdout).toContain('WARN integration: socket ready, but runs are failing: codex: codex login status failed')
     expect((await run(['status'])).stdout).toContain('runs failing: codex: codex login status failed')
 
-    // A standing-by daemon rewrites its status only when its reason changes: an old file with the
-    // daemon still holding the home's lock is a healthy standby; without a live holder, a daemon that is down.
-    const longAgo = new Date(Date.now() - 30 * 60_000).toISOString()
-    fs.writeFileSync(statusFile, STATUS({ updated_at: longAgo, socket: 'idle', standby: { home: '/elsewhere/.agentchat', pid: 4242, since } }))
-    fs.writeFileSync(path.join(home(), 'daemon.lock'), JSON.stringify({ pid: process.pid }))
+    // A standing-by daemon rewrites its status every poll: a fresh standby is healthy, an old file a daemon that is down.
+    fs.writeFileSync(statusFile, STATUS({ socket: 'idle', runs_failed: 0, standby: { home: '/elsewhere/.agentchat', pid: 4242, since } }))
     expect((await run(['doctor'])).stdout).toContain('WARN integration: standing by — /elsewhere/.agentchat (pid 4242) serves this agent')
     expect((await run(['status'])).stdout).toContain('standby: /elsewhere/.agentchat (pid 4242) serves this agent')
-    fs.rmSync(path.join(home(), 'daemon.lock'))
-    expect((await run(['doctor'])).stdout).toContain('FAIL integration: the daemon is not running (it last stood by for another listener)')
+    fs.writeFileSync(statusFile, STATUS({ updated_at: new Date(Date.now() - 30 * 60_000).toISOString(), socket: 'idle', standby: { home: '/elsewhere/.agentchat', pid: 4242, since } }))
+    expect((await run(['doctor'])).stdout).toMatch(/FAIL integration: status last written 30 min ago — the daemon is not running/)
+  })
+
+  it('a home that gave the agent up — runs kept failing — is said by doctor and status', { timeout: 30_000 }, async () => {
+    giveCodexAnIdentity()
+    await run([])
+    const since = new Date(Date.now() - 120_000).toISOString()
+    fs.writeFileSync(
+      path.join(home(), 'integration.status.json'),
+      STATUS({
+        socket: 'idle',
+        last_error: 'this home cannot serve @codex-agent: runs failing: codex: codex login status failed: Not logged in. It holds no socket and starts no run until that is fixed (checked again every 60 s); another listener for @codex-agent may serve it meanwhile.',
+        runs_failing: { reason: 'codex: codex login status failed: Not logged in', since, runs_missed: 3, checked_at: new Date().toISOString() },
+      }),
+    )
+    const doctor = await run(['doctor'])
+    expect(doctor.code).toBe(1)
+    expect(doctor.stdout).toContain('FAIL integration: this home gave the agent up: runs failing: codex: codex login status failed')
+    expect((await run(['status'])).stdout).toContain('this home cannot serve @codex-agent')
   })
 
   it('the profile and working root are the daemon’s own when it has recorded them; what this shell would change is said', { timeout: 30_000 }, async () => {
