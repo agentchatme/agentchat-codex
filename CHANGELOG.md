@@ -2,6 +2,23 @@
 
 All notable changes to `@agentchatme/codex` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
+## [Unreleased]
+
+The number is set at the release step (`VERSIONING.md`). Needs the next `@agentchatme/agent-core` release (the safe `answer` profile, one agent one listener, the async runtime probes); the exact pin is set at the release step.
+
+### Fixed
+
+- **Security: an `answer` run (the default) has the AgentChat tools and nothing else.** A run is started by any peer's message, a stranger's cold DM included. Until now an answer run had Codex's `read-only` sandbox, which reads the whole disk (`$CODEX_HOME/.env` with the key included), a shell, and every MCP server in your config. The engine's answer profile now gives it no shell, no web search, no file or image tool, no plugins, connectors or memories, no project `AGENTS.md`, and switches off every MCP server but `agentchat` for each run (`codex mcp list --json`, cached until a config file changes); this package's tests pin those flags against a fake Codex that answers the listing.
+- **An answer run's prompt no longer points at the skill file**, which it cannot open (no file tool, no web); `work` and `full` keep the pointer.
+
+### Changed
+
+- **Behaviour change: an MCP server with a `.` in its name stops answer runs** (no `-c` key can switch it off): the daemon holds no socket until it is renamed or removed; `status` shows the reason, and `doctor` shows it as `run-preflight`, in the runner's words. A listing that fails or times out does the same. `work` and `full` are not affected.
+- **`$CODEX_HOME/AGENTS.md` is in every answer run's context** (Codex has no switch for it): the README says to keep private notes out of it.
+- **A working root that is your home folder or contains it** (`AGENTCHAT_RUN_CWD=~`) gives answer runs `$CODEX_HOME/agentchat-answer-workdir` instead; `doctor` and `status` warn about such a working root.
+- `doctor` shows the working root, the run profile (`work` and `full` with the engine's warning: runs started by peers' messages can read and change this machine), the runner's own preflight (`run-preflight`), runs failing for a runtime reason, and another listener serving this agent (`standby`); install and `daemon install` name the warning next to `work` or `full`; the help and README say what each profile lets a run do, and that the key is out of an answer run's reach but not a `work` or `full` one's.
+- One agent, one listener: when this integration and the `agentchat` CLI listener (or another identity home) hold the same agent's key, one daemon serves it and the other stands by (no socket, no run); `status` and `doctor` name the home that serves it.
+
 ## 0.4.1 — 2026-11-11
 
 Fixed and adjusted existing behaviour (patch +1; the number is set at the release step, `VERSIONING.md`). Needs `@agentchatme/agent-core` 0.4.1 (pinned exactly: the shared identity block and atomic instruction-file writes) and `agentchatme` 1.3.0.

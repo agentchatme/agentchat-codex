@@ -7,7 +7,7 @@ import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, INTEGRATION_ENV_LEGACY_REMOVAL, MANUAL, manualVersion } from '@agentchatme/agent-core'
+import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, INTEGRATION_ENV_LEGACY_REMOVAL, MANUAL, manualVersion, PEER_RUN_WARNING } from '@agentchatme/agent-core'
 import { VERSION } from '../src/version.js'
 import { installFakeCodex, type FakeCodex } from './helpers/fake-codex.js'
 
@@ -491,6 +491,89 @@ describe('--help', () => {
     const out = (await run(['--help'])).stdout
     for (const name of ['AGENTCHAT_RUN_PROFILE', INTEGRATION_ENV, 'AGENTCHAT_RUN_BUDGET_MS', 'AGENTCHAT_RUN_CWD', 'AGENTCHAT_API_BASE']) expect(out).toContain(name)
     expect(out).toMatch(/AGENTCHAT_API_KEY\s+override the stored key \(never captured into the service\)/)
+  })
+
+  it('says what each profile lets a peer-started run do, and what an answer run still has in its context', async () => {
+    const out = (await run(['--help'])).stdout.replace(/\s+/g, ' ')
+    expect(out).toContain('answer (default): the AgentChat tools only — no shell, no web, no file tool, no other MCP server')
+    expect(out).toContain('a server with a "." in its name stops answer runs')
+    expect(out).toContain('$CODEX_HOME/AGENTS.md is still in its context, so keep private notes out of it')
+    expect(out).toContain(`work and full: ${PEER_RUN_WARNING}`)
+    expect(out).toContain('$CODEX_HOME/agentchat-answer-workdir')
+  })
+})
+
+describe('doctor: what a peer-started run may do, and whether one can start', () => {
+  const STATUS = (extra: Record<string, unknown>): string =>
+    JSON.stringify({
+      version: 2,
+      updated_at: new Date().toISOString(),
+      pid: process.pid,
+      runtime: 'codex',
+      handle: 'codex-agent',
+      profile: 'answer',
+      socket: 'ready',
+      wakes: 3,
+      wakes_absorbed: 0,
+      invites: 0,
+      runs_started: 3,
+      runs_ok: 0,
+      runs_failed: 3,
+      runs_timed_out: 0,
+      runs_not_started: 0,
+      runs_skipped_empty: 0,
+      last_run: null,
+      retry_rung: 0,
+      retry_due_at: null,
+      last_error: null,
+      texts: null,
+      ...extra,
+    })
+
+  it('answer (the default): the profile in plain words, and the runner’s preflight (with its MCP listing) passes', { timeout: 30_000 }, async () => {
+    giveCodexAnIdentity()
+    await run([])
+    const out = await run(['doctor'])
+    expect(out.stdout).toContain(`PASS run-profile: answer: the AgentChat tools only — no shell, no web, no file tool (apply_patch reads ${path.join(home(), 'daemon-workdir')} alone and writes nothing), no other MCP server, no project AGENTS.md; ${agentsMd()} is still in its context`)
+    expect(out.stdout).toContain('PASS run-preflight: the daemon can start a run')
+    expect(out.stdout).toContain(`PASS run-workdir: ${path.join(home(), 'daemon-workdir')}`)
+  })
+
+  it('an MCP server no -c key can switch off: run-preflight FAILs in the runner’s words; work is not refused for it', { timeout: 30_000 }, async () => {
+    giveCodexAnIdentity()
+    await run([])
+    const listed = JSON.stringify([{ name: 'agentchat', enabled: true }, { name: 'team.notes', enabled: true }])
+    const out = await run(['doctor'], { FAKE_CODEX_MCP_LIST: listed })
+    expect(out.code).toBe(1)
+    expect(out.stdout).toContain('FAIL run-preflight: no run starts: could not list Codex\'s MCP servers')
+    expect(out.stdout).toContain('the MCP server "team.notes" cannot be switched off for one run')
+    const work = await run(['doctor'], { FAKE_CODEX_MCP_LIST: listed, AGENTCHAT_RUN_PROFILE: 'work' })
+    expect(work.stdout).toContain('PASS run-preflight')
+    expect(work.stdout).toContain(`WARN run-profile: work: ${PEER_RUN_WARNING}`)
+  })
+
+  it('a working root that is the home folder: answer runs work in their own folder, and doctor says so', { timeout: 30_000 }, async () => {
+    giveCodexAnIdentity()
+    await run([])
+    const out = await run(['doctor'], { AGENTCHAT_RUN_CWD: sandbox })
+    expect(out.stdout).toContain(`WARN run-workdir: ${sandbox} is your home folder or contains it — answer runs work in ${path.join(codexDir(), 'agentchat-answer-workdir')} instead`)
+  })
+
+  it('runs failing for a runtime reason, and another listener serving the agent, are said in doctor and status', { timeout: 30_000 }, async () => {
+    giveCodexAnIdentity()
+    await run([])
+    const statusFile = path.join(home(), 'integration.status.json')
+    const since = new Date(Date.now() - 60_000).toISOString()
+    fs.writeFileSync(statusFile, STATUS({ runs_failing: { reason: 'codex: codex login status failed: Not logged in', since, runs_missed: 3, checked_at: new Date().toISOString() } }))
+    const doctor = await run(['doctor'])
+    expect(doctor.code).toBe(1)
+    expect(doctor.stdout).toContain('FAIL runs: runs failing: codex: codex login status failed: Not logged in')
+    expect(doctor.stdout).toContain('WARN integration: socket ready, but runs are failing: codex: codex login status failed')
+    expect((await run(['status'])).stdout).toContain('runs failing: codex: codex login status failed')
+
+    fs.writeFileSync(statusFile, STATUS({ socket: 'idle', standby: { home: '/elsewhere/.agentchat', pid: 4242, since } }))
+    expect((await run(['doctor'])).stdout).toContain('WARN integration: standing by — /elsewhere/.agentchat (pid 4242) serves this agent')
+    expect((await run(['status'])).stdout).toContain('standby: /elsewhere/.agentchat (pid 4242) serves this agent')
   })
 })
 

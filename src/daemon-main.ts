@@ -1,9 +1,9 @@
 import { parseArgs } from 'node:util'
 import * as path from 'node:path'
-import { manualPointer, resolveRunProfile } from '@agentchatme/agent-core'
+import { resolveRunProfile } from '@agentchatme/agent-core'
 import { runIntegration } from '@agentchatme/agent-core/daemon'
-import { CLIENT, codexHome, identityHome, skillPath } from './host.js'
-import { CodexRunner } from './runner.js'
+import { CLIENT, codexHome, identityHome, resolveRunWorkdir, skillPath } from './host.js'
+import { CodexRunner, runPointer } from './runner.js'
 
 // ─── The integration daemon binary ──────────────────────────────────────────
 //
@@ -16,8 +16,10 @@ import { CodexRunner } from './runner.js'
 // `codex` runtime (`GET /v1/texts?runtime=codex`, tool names already spelled
 // `mcp__agentchat__agentchat_inbox` for `[mcp_servers.agentchat]`;
 // codex-rs/core/src/tools/handlers/mcp.rs: `mcp__` prefix, `__` delimiter),
-// then one pointer to the skill — the one line only this package knows. The
-// skill file follows the manual the same texts announce (`manualPath`).
+// then one pointer to the skill — the one line only this package knows — in
+// the profiles whose runs can open it (`runPointer`: an answer run has no file
+// tool and no web). The skill file follows the manual the same texts announce
+// (`manualPath`).
 
 async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   let values: { home?: string | undefined; workdir?: string | undefined }
@@ -34,9 +36,7 @@ async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   }
 
   const home = values.home !== undefined ? path.resolve(values.home) : identityHome()
-  const runCwd = process.env['AGENTCHAT_RUN_CWD']?.trim()
-  const workdir =
-    values.workdir !== undefined ? path.resolve(values.workdir) : runCwd !== undefined && runCwd.length > 0 ? path.resolve(runCwd) : path.join(home, 'daemon-workdir')
+  const workdir = values.workdir !== undefined ? path.resolve(values.workdir) : resolveRunWorkdir(home)
   const profile = resolveRunProfile()
 
   return await runIntegration({
@@ -45,7 +45,7 @@ async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
     profile,
     runner: new CodexRunner({ codexHome: codexHome(), identityHome: home, workdir, profile }),
     client: CLIENT,
-    manualPointer: manualPointer(`at ${skillPath()}`),
+    manualPointer: runPointer(profile, skillPath()),
     // The skill follows the manual the served texts announce, on their cadence.
     manualPath: skillPath(),
   })
