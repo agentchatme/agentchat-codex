@@ -579,22 +579,39 @@ describe('doctor: what a peer-started run may do, and whether one can start', ()
     expect((await run(['doctor'])).stdout).toMatch(/FAIL integration: status last written 30 min ago — the daemon is not running/)
   })
 
-  it('a home that gave the agent up — runs kept failing — is said by doctor and status', { timeout: 30_000 }, async () => {
+  it('a home that gave the agent up is said by doctor and status, with what clears it — a refused key, or failing runs handed to a waiting listener', { timeout: 30_000 }, async () => {
     giveCodexAnIdentity()
     await run([])
+    const statusFile = path.join(home(), 'integration.status.json')
     const since = new Date(Date.now() - 120_000).toISOString()
+    const retryAt = new Date(Date.now() + 60_000).toISOString()
+    fs.writeFileSync(statusFile, STATUS({ socket: 'idle', unservable: { reason: 'key_refused', detail: 'auth rejected (close 1008 Invalid token)', since, retry_at: retryAt } }))
+    const refused = await run(['doctor'])
+    expect(refused.code).toBe(1)
+    expect(refused.stdout).toContain('FAIL integration: this home gave the agent up: the server refuses its key (auth rejected (close 1008 Invalid token)); signing in again here')
+    expect((await run(['status'])).stdout).toContain("gave up: the server refuses this home's key")
+
+    const reason = 'codex: codex login status failed: Not logged in'
     fs.writeFileSync(
-      path.join(home(), 'integration.status.json'),
+      statusFile,
       STATUS({
         socket: 'idle',
-        last_error: 'this home cannot serve @codex-agent: runs failing: codex: codex login status failed: Not logged in. It holds no socket and starts no run until that is fixed (checked again every 60 s); another listener for @codex-agent may serve it meanwhile.',
-        runs_failing: { reason: 'codex: codex login status failed: Not logged in', since, runs_missed: 3, checked_at: new Date().toISOString() },
+        runs_failing: { reason, since, runs_missed: 3, checked_at: new Date().toISOString() },
+        unservable: { reason: 'runs_failing', detail: `runs failing: ${reason}`, since, retry_at: retryAt },
       }),
     )
-    const doctor = await run(['doctor'])
-    expect(doctor.code).toBe(1)
-    expect(doctor.stdout).toContain('FAIL integration: this home gave the agent up: runs failing: codex: codex login status failed')
-    expect((await run(['status'])).stdout).toContain('this home cannot serve @codex-agent')
+    const handedOver = await run(['doctor'])
+    expect(handedOver.stdout).toContain(`FAIL integration: this home gave the agent up to another listener that was waiting: runs failing: ${reason} (since ${since}); a runtime check that passes clears this`)
+    // A lone install keeps serving while runs fail.
+    fs.writeFileSync(statusFile, STATUS({ runs_failing: { reason, since, runs_missed: 3, checked_at: new Date().toISOString() } }))
+    expect((await run(['doctor'])).stdout).toContain(`WARN integration: socket ready, but runs are failing: ${reason}`)
+  })
+
+  it('lock renewals that failed are said', { timeout: 30_000 }, async () => {
+    giveCodexAnIdentity()
+    await run([])
+    fs.writeFileSync(path.join(home(), 'integration.status.json'), STATUS({ runs_failed: 0, lease_errors: { count: 1, last: 'EACCES: permission denied' } }))
+    expect((await run(['doctor'])).stdout).toContain('WARN locks: 1 lock renewal(s) failed (last: EACCES: permission denied); a lock that cannot be renewed for 45 s is given up')
   })
 
   it('the profile and working root are the daemon’s own when it has recorded them; what this shell would change is said', { timeout: 30_000 }, async () => {

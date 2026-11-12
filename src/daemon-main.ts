@@ -1,7 +1,7 @@
 import { parseArgs } from 'node:util'
 import * as path from 'node:path'
-import { resolveRunProfile } from '@agentchatme/agent-core'
-import { runIntegration } from '@agentchatme/agent-core/daemon'
+import { hostedMcpUrl, resolveRunProfile } from '@agentchatme/agent-core'
+import { runIntegration, type RunnerFactory } from '@agentchatme/agent-core/daemon'
 import { CLIENT, codexHome, identityHome, resolveRunWorkdir, skillPath } from './host.js'
 import { CodexRunner, runPointer } from './runner.js'
 
@@ -20,6 +20,13 @@ import { CodexRunner, runPointer } from './runner.js'
 // the profiles whose runs can open it (`runPointer`: an answer run has no file
 // tool and no web). The skill file follows the manual the same texts announce
 // (`manualPath`).
+//
+// The runner is built per identity (a `RunnerFactory`), so every run pins
+// `mcp_servers.agentchat.url` to the hosted server of the agent the daemon
+// serves (`pinMcpUrl`): no other config layer Codex reads — a trusted
+// project's `.codex/config.toml` among them — can point the agentchat server,
+// and the key its bearer variable carries, anywhere else. A new sign-in builds
+// a new runner.
 
 async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   let values: { home?: string | undefined; workdir?: string | undefined }
@@ -38,12 +45,17 @@ async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   const home = values.home !== undefined ? path.resolve(values.home) : identityHome()
   const workdir = values.workdir !== undefined ? path.resolve(values.workdir) : resolveRunWorkdir(home)
   const profile = resolveRunProfile()
+  const runner: RunnerFactory = {
+    // The runner's own name (`CodexRunner.name`), for status before any identity is known.
+    name: 'codex',
+    create: (identity) => new CodexRunner({ codexHome: codexHome(), identityHome: identity.home, workdir, profile, pinMcpUrl: hostedMcpUrl(identity.apiBase) }),
+  }
 
   return await runIntegration({
     home,
     workdir,
     profile,
-    runner: new CodexRunner({ codexHome: codexHome(), identityHome: home, workdir, profile }),
+    runner,
     client: CLIENT,
     manualPointer: runPointer(profile, skillPath()),
     // The skill follows the manual the served texts announce, on their cadence.

@@ -138,6 +138,8 @@ describe('the shipped daemon’s answer runner', () => {
     expect(alive, out).toBe(true)
     expect(out).toMatch(/integration up as @codex-answer-ok via codex \(codex [^)]+\), profile answer/)
     expect(fs.readFileSync(lists, 'utf-8')).toContain('"--disable","shell_tool"')
+    // The hosted server's URL is pinned to the served identity's API base on every run (and its listing).
+    expect(fs.readFileSync(lists, 'utf-8')).toContain(JSON.stringify(`mcp_servers.agentchat.url=${JSON.stringify('http://127.0.0.1:9/mcp')}`))
   }, 30_000)
 
   it('a server no -c key can switch off stops answer runs: the daemon holds no socket and says why', async () => {

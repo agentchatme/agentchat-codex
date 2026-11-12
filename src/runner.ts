@@ -14,6 +14,10 @@ import { API_KEY_ENV } from './host.js'
 // `$CODEX_HOME/.env` at startup and, for the daemon's runs, also set on the
 // child environment from this integration's identity file, read per run.
 //
+// The daemon builds the runner per identity and pins the hosted server's URL
+// on every run (`pinMcpUrl`, `-c mcp_servers.agentchat.url=…`): another config
+// layer cannot point the agentchat server, and the key, elsewhere.
+//
 // An `answer` run (the default, started by any peer's message) has the
 // AgentChat tools and nothing else: no shell, no web, no local-file tool, and
 // every other MCP server Codex would load switched off for that run — the

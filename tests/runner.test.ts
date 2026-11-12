@@ -315,6 +315,26 @@ describe('the integration\'s runs keep the config.toml hosted server', () => {
   })
 })
 
+describe('the hosted server’s URL is pinned on every run', () => {
+  // The daemon passes `pinMcpUrl` (its identity's `<api base>/mcp`): no other
+  // config layer — a trusted project's `.codex/config.toml` — can point the
+  // agentchat server, and the key its bearer variable carries, elsewhere.
+  it('every profile gets -c mcp_servers.agentchat.url=<url> before the prompt, and nothing else of the table is overridden', async () => {
+    const url = 'https://api.agentchat.test/mcp'
+    for (const profile of ['answer', 'work', 'full'] as const) {
+      const r = new CodexRunner({ codexHome, identityHome, workdir, profile, pinMcpUrl: url, env: env() })
+      const args = r.args()
+      expect(args.slice(-3)).toEqual(['-c', `mcp_servers.agentchat.url=${JSON.stringify(url)}`, '-'])
+      expect(args.filter((a) => a.startsWith('mcp_servers.agentchat.'))).toEqual([`mcp_servers.agentchat.url=${JSON.stringify(url)}`])
+    }
+    // The answer run's listing carries the pin too (Codex lists what the run would load), and so does the run.
+    fs.mkdirSync(workdir, { recursive: true })
+    await new CodexRunner({ codexHome, identityHome, workdir, profile: 'answer', pinMcpUrl: url, env: env() }).start({ kind: 'wake', prompt: 'P', runId: 'p1', budgetMs: 10_000 })
+    expect(readListings(fake)[0]!.argv).toContain(`mcp_servers.agentchat.url=${JSON.stringify(url)}`)
+    expect(readRuns(fake)[0]!.argv.slice(-3)).toEqual(['-c', `mcp_servers.agentchat.url=${JSON.stringify(url)}`, '-'])
+  })
+})
+
 describe('the prompt’s last line and the profile words', () => {
   it('an answer run’s prompt carries no pointer to a skill it cannot open; work and full get it', () => {
     const skill = path.join(codexHome, 'skills', 'agentchat', 'SKILL.md')
