@@ -7,6 +7,8 @@ import {
   integrationDisabledBy,
   INTEGRATION_ENV,
   integrationStatusAge,
+  isRunProfile,
+  lockHolder,
   probeHostedMcp,
   readCredentials,
   readIntegrationStatus,
@@ -22,10 +24,11 @@ import {
   type DoctorContext,
   type DoctorOpts,
   type HostProfile,
+  type RunProfile,
   type ServedManual,
   type StatusContext,
 } from '@agentchatme/agent-core'
-import { codexAnswerFallbackWorkdir } from '@agentchatme/agent-core/presets'
+import { codexAnswerFallbackWorkdir, deniedAncestorOf } from '@agentchatme/agent-core/presets'
 import { CLIENT, identityHome, anchorFile, codexHome, invocation, LABEL, resolveRunWorkdir, runWorkdirFor } from './host.js'
 import { checkPlacement, placeAll, placementMark, skillPresent, unplaceIdentity, type PlacementIdentity } from './placement.js'
 import { CodexRunner, codexIsLoggedIn, inspectCodexRuntime, profileNote } from './runner.js'
@@ -171,31 +174,59 @@ function serviceCheck(fix: boolean): DoctorCheck {
 }
 
 /**
- * The runner the daemon builds for this config, from the same switches the
- * service captures (this shell's: install, `daemon install` and `doctor --fix`
- * write the service from it).
+ * The profile and working root runs use: the daemon's own, from its status
+ * file (it records both), when it has written one; this shell's switches
+ * otherwise (install, `daemon install` and `doctor --fix` write the service
+ * from them). `differs` names what this shell would change on the next of those.
  */
-function daemonRunner(): CodexRunner {
-  return new CodexRunner({ codexHome: codexHome(), identityHome: identityHome(), workdir: resolveRunWorkdir(identityHome()), profile: resolveRunProfile() })
+function runSettings(): { profile: RunProfile; workdir: string; differs: string | null } {
+  const shell = { profile: resolveRunProfile(), workdir: resolveRunWorkdir(identityHome()) }
+  const status = readIntegrationStatus(identityHome())
+  if (status === null || !isRunProfile(status.profile)) return { ...shell, differs: null }
+  const recorded = { profile: status.profile, workdir: status.workdir ?? shell.workdir }
+  const changes = [
+    recorded.profile !== shell.profile ? `profile ${shell.profile}` : null,
+    path.resolve(recorded.workdir) !== shell.workdir ? `working root ${shell.workdir}` : null,
+  ].filter((c): c is string => c !== null)
+  return { ...recorded, differs: changes.length > 0 ? changes.join(' and ') : null }
+}
+
+/** ` (the daemon's; … from this shell would set …)` when the daemon's settings are not this shell's. */
+function settingsNote(settings: ReturnType<typeof runSettings>): string {
+  return settings.differs !== null ? ` (the daemon's, from its status; install, \`daemon install\` or \`doctor --fix\` from this shell would set ${settings.differs})` : ''
+}
+
+/** The runner the daemon builds, for the settings it runs with (`runSettings`). */
+function daemonRunner(settings: ReturnType<typeof runSettings> = runSettings()): CodexRunner {
+  return new CodexRunner({ codexHome: codexHome(), identityHome: identityHome(), workdir: settings.workdir, profile: settings.profile })
 }
 
 /**
  * The run's working root. One that is the home folder or contains it is no
  * answer run's (those work in an empty folder of their own), and `work`/`full`
- * runs there would see the whole home.
+ * runs there would see the whole home. One that contains `$CODEX_HOME` holds
+ * the key (`.env`, `agentchat/credentials`), which an answer run's
+ * `apply_patch` could then read.
  */
 export function workdirCheck(): DoctorCheck {
-  const workdir = resolveRunWorkdir(identityHome())
-  if (!workdirExposesHome(workdir)) return { name: 'run-workdir', verdict: 'PASS', detail: workdir }
-  return {
-    name: 'run-workdir',
-    verdict: 'WARN',
-    detail: `${workdir} is your home folder or contains it — ${
-      resolveRunProfile() === 'answer'
-        ? `answer runs work in ${codexAnswerFallbackWorkdir(codexHome())} instead`
-        : "a run started by a peer's message there can see everything under it"
-    }; point AGENTCHAT_RUN_CWD at a folder of its own (or unset it for ${runWorkdirFor(identityHome())}), then \`${invocation()} daemon install\``,
+  const settings = runSettings()
+  const workdir = settings.workdir
+  const note = settingsNote(settings)
+  const fix = `point AGENTCHAT_RUN_CWD at a folder of its own (or unset it for ${runWorkdirFor(identityHome())}), then \`${invocation()} daemon install\``
+  if (workdirExposesHome(workdir)) {
+    return {
+      name: 'run-workdir',
+      verdict: 'WARN',
+      detail: `${workdir}${note} is your home folder or contains it — ${
+        settings.profile === 'answer' ? `answer runs work in ${codexAnswerFallbackWorkdir(codexHome())} instead` : "a run started by a peer's message there can see everything under it"
+      }; ${fix}`,
+    }
   }
+  if (deniedAncestorOf(codexHome(), [workdir]) !== null) {
+    const what = path.resolve(workdir) === codexHome() ? 'is $CODEX_HOME' : `contains ${codexHome()}`
+    return { name: 'run-workdir', verdict: 'WARN', detail: `${workdir}${note} ${what}, where the key is (.env, agentchat/credentials): a run working there can read it — ${fix}` }
+  }
+  return { name: 'run-workdir', verdict: 'PASS', detail: `${workdir}${note}` }
 }
 
 /**
@@ -204,13 +235,13 @@ export function workdirCheck(): DoctorCheck {
  * engine's own warning (`runProfileWarning`).
  */
 export function profileCheck(): DoctorCheck {
-  const profile = resolveRunProfile()
-  const warning = runProfileWarning(profile)
-  if (warning !== null) return { name: 'run-profile', verdict: 'WARN', detail: `${profile}: ${warning} (AGENTCHAT_RUN_PROFILE; answer is the default)` }
+  const settings = runSettings()
+  const warning = runProfileWarning(settings.profile)
+  if (warning !== null) return { name: 'run-profile', verdict: 'WARN', detail: `${settings.profile}: ${warning}${settingsNote(settings)} (AGENTCHAT_RUN_PROFILE; answer is the default)` }
   return {
     name: 'run-profile',
-    verdict: 'PASS',
-    detail: `answer: the AgentChat tools only — no shell, no web, no file tool (apply_patch reads ${daemonRunner().workdir()} alone and writes nothing), no other MCP server, no project AGENTS.md; ${anchorFile()} is still in its context`,
+    verdict: settings.differs !== null ? 'WARN' : 'PASS',
+    detail: `answer: the AgentChat tools only — no shell, no web, no file tool (apply_patch reads ${daemonRunner(settings).workdir()} alone and writes nothing), no other MCP server, no project AGENTS.md; ${anchorFile()} is still in its context${settingsNote(settings)}`,
   }
 }
 
@@ -234,18 +265,22 @@ function integrationCheck(): DoctorCheck {
   if (readCredentials(home) === null) return { name: 'integration', verdict: 'PASS', detail: 'no identity — the daemon idles by design' }
   const status = readIntegrationStatus(home)
   if (status === null) return { name: 'integration', verdict: 'WARN', detail: 'no status written yet — the daemon has not run, or is still starting' }
-  const age = integrationStatusAge(status) ?? Number.POSITIVE_INFINITY
-  if (age > 3 * 60_000) return { name: 'integration', verdict: 'FAIL', detail: `status last written ${Math.round(age / 60_000)} min ago — the daemon is not running` }
-  if (status.socket === 'off') return { name: 'integration', verdict: 'PASS', detail: `${integrationDisabledBy() ?? INTEGRATION_ENV}=off — resident, holding no socket` }
   // One agent, one listener: another daemon (the CLI listener, say) serves this agent from its own home.
+  // A standing-by daemon rewrites its status only when its reason changes, so
+  // the file's age says nothing about it: whether it still holds this home's
+  // lock (`daemon.lock`, the engine's leader lock) does.
   const standby = status.standby ?? null
   if (standby !== null) {
+    if (lockHolder(path.join(home, 'daemon.lock')) === null) return { name: 'integration', verdict: 'FAIL', detail: 'the daemon is not running (it last stood by for another listener)' }
     return {
       name: 'integration',
       verdict: 'WARN',
       detail: `standing by — ${standby.home ?? 'another identity home'}${standby.pid !== null ? ` (pid ${standby.pid})` : ''} serves this agent; this daemon holds no socket and starts no run while it does, and takes over when it stops`,
     }
   }
+  const age = integrationStatusAge(status) ?? Number.POSITIVE_INFINITY
+  if (age > 3 * 60_000) return { name: 'integration', verdict: 'FAIL', detail: `status last written ${Math.round(age / 60_000)} min ago — the daemon is not running` }
+  if (status.socket === 'off') return { name: 'integration', verdict: 'PASS', detail: `${integrationDisabledBy() ?? INTEGRATION_ENV}=off — resident, holding no socket` }
   if (status.socket === 'ready') {
     const texts = status.texts?.source ?? 'none'
     // The daemon's own recheck after runs that did not get done (the `runs` check above is its FAIL).

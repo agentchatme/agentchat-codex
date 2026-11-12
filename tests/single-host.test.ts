@@ -571,9 +571,35 @@ describe('doctor: what a peer-started run may do, and whether one can start', ()
     expect(doctor.stdout).toContain('WARN integration: socket ready, but runs are failing: codex: codex login status failed')
     expect((await run(['status'])).stdout).toContain('runs failing: codex: codex login status failed')
 
-    fs.writeFileSync(statusFile, STATUS({ socket: 'idle', standby: { home: '/elsewhere/.agentchat', pid: 4242, since } }))
+    // A standing-by daemon rewrites its status only when its reason changes: an old file with the
+    // daemon still holding the home's lock is a healthy standby; without a live holder, a daemon that is down.
+    const longAgo = new Date(Date.now() - 30 * 60_000).toISOString()
+    fs.writeFileSync(statusFile, STATUS({ updated_at: longAgo, socket: 'idle', standby: { home: '/elsewhere/.agentchat', pid: 4242, since } }))
+    fs.writeFileSync(path.join(home(), 'daemon.lock'), JSON.stringify({ pid: process.pid }))
     expect((await run(['doctor'])).stdout).toContain('WARN integration: standing by — /elsewhere/.agentchat (pid 4242) serves this agent')
     expect((await run(['status'])).stdout).toContain('standby: /elsewhere/.agentchat (pid 4242) serves this agent')
+    fs.rmSync(path.join(home(), 'daemon.lock'))
+    expect((await run(['doctor'])).stdout).toContain('FAIL integration: the daemon is not running (it last stood by for another listener)')
+  })
+
+  it('the profile and working root are the daemon’s own when it has recorded them; what this shell would change is said', { timeout: 30_000 }, async () => {
+    giveCodexAnIdentity()
+    await run([])
+    fs.writeFileSync(path.join(home(), 'integration.status.json'), STATUS({ profile: 'full', workdir: path.join(sandbox, 'project'), runs_failed: 0, runs_ok: 3 }))
+    const out = await run(['doctor'])
+    expect(out.stdout).toContain(`WARN run-profile: full: ${PEER_RUN_WARNING} (the daemon's, from its status; install, \`daemon install\` or \`doctor --fix\` from this shell would set profile answer and working root ${path.join(home(), 'daemon-workdir')})`)
+  })
+
+  it('a working root that contains $CODEX_HOME (the key in .env) is said: a run there could read it', { timeout: 30_000 }, async () => {
+    giveCodexAnIdentity()
+    await run([])
+    const out = await run(['doctor'], { AGENTCHAT_RUN_CWD: codexDir() })
+    expect(out.stdout).toContain(`WARN run-workdir: ${codexDir()} is $CODEX_HOME, where the key is (.env, agentchat/credentials): a run working there can read it`)
+    // A folder above a relocated CODEX_HOME (not the home folder) contains it.
+    const relocated = path.join(sandbox, 'tools', '.codex')
+    fs.mkdirSync(relocated, { recursive: true })
+    const above = await run(['doctor'], { CODEX_HOME: relocated, AGENTCHAT_RUN_CWD: path.join(sandbox, 'tools') })
+    expect(above.stdout).toContain(`WARN run-workdir: ${path.join(sandbox, 'tools')} contains ${relocated}, where the key is`)
   })
 })
 
