@@ -32,6 +32,8 @@ const baseEnv = (): Record<string, string> => ({
   USERPROFILE: sandbox,
   CODEX_HOME: path.join(sandbox, '.codex'),
   AGENTCHAT_SERVICE_DRY_RUN: '1',
+  // This test file's own agent-lock folder (tests/setup/isolated-locks.ts), never the user's.
+  AGENTCHAT_LOCK_DIR: process.env['AGENTCHAT_LOCK_DIR'] ?? path.join(sandbox, 'locks'),
 })
 
 function run(script: string, args: string[], env: Record<string, string> = {}): Promise<{ code: number | null; out: string }> {
@@ -120,6 +122,35 @@ describe('the daemon is RESIDENT — it idles rather than exiting', () => {
     expect(out).toContain(`${INTEGRATION_ENV_LEGACY}=off`)
     expect((JSON.parse(fs.readFileSync(path.join(home, 'integration.status.json'), 'utf-8')) as { socket: string }).socket).toBe('off')
   }, 20_000)
+})
+
+describe('the shipped daemon’s answer runner', () => {
+  const signIn = (home: string, handle: string): void => {
+    fs.mkdirSync(home, { recursive: true })
+    fs.writeFileSync(path.join(home, 'credentials'), JSON.stringify({ api_key: 'ac_live_' + 'a'.repeat(40), handle, api_base: 'http://127.0.0.1:9' }))
+  }
+
+  it('lists Codex’s MCP servers before it holds the socket, and comes up when it can switch every other one off', async () => {
+    const home = path.join(sandbox, '.codex', 'agentchat')
+    signIn(home, 'codex-answer-ok')
+    const lists = path.join(sandbox, 'lists.jsonl')
+    const { out, alive } = await runFor(DAEMON, ['--home', home], 6000, { FAKE_CODEX_MCP_LIST_RECORD: lists })
+    expect(alive, out).toBe(true)
+    expect(out).toMatch(/integration up as @codex-answer-ok via codex \(codex [^)]+\), profile answer/)
+    expect(fs.readFileSync(lists, 'utf-8')).toContain('"--disable","shell_tool"')
+    // The hosted server's URL is pinned to the served identity's API base on every run (and its listing).
+    expect(fs.readFileSync(lists, 'utf-8')).toContain(JSON.stringify(`mcp_servers.agentchat.url=${JSON.stringify('http://127.0.0.1:9/mcp')}`))
+  }, 30_000)
+
+  it('a server no -c key can switch off stops answer runs: the daemon holds no socket and says why', async () => {
+    const home = path.join(sandbox, '.codex', 'agentchat')
+    signIn(home, 'codex-answer-refused')
+    const { out, alive } = await runFor(DAEMON, ['--home', home], 6000, { FAKE_CODEX_MCP_LIST: JSON.stringify([{ name: 'agentchat', enabled: true }, { name: 'my.notes', enabled: true }]) })
+    expect(alive, out).toBe(true)
+    expect(out).toContain('not connecting yet: runtime (codex) not ready: could not list Codex\'s MCP servers')
+    expect(out).toContain('"my.notes" cannot be switched off')
+    expect(out).not.toMatch(/integration up as/)
+  }, 30_000)
 })
 
 describe('daemon install points the service at the daemon, not the CLI', () => {

@@ -1,12 +1,16 @@
 import * as path from 'node:path'
 import {
   alwaysOnOptedOut,
+  agentLockDir,
   alwaysOnState,
   createIdentityCommands,
+  DEFAULT_API_BASE,
   fetchServedTexts,
+  hostedMcpUrl,
   integrationDisabledBy,
   INTEGRATION_ENV,
   integrationStatusAge,
+  isRunProfile,
   probeHostedMcp,
   readCredentials,
   readIntegrationStatus,
@@ -14,17 +18,23 @@ import {
   renderAnchorBlock,
   renderDeclinedBlock,
   resolveIdentity,
+  resolveRunProfile,
+  runProfileWarning,
+  workdirExposesHome,
   writeAnchor,
   type DoctorCheck,
   type DoctorContext,
   type DoctorOpts,
   type HostProfile,
+  type IntegrationUnservable,
+  type RunProfile,
   type ServedManual,
   type StatusContext,
 } from '@agentchatme/agent-core'
-import { CLIENT, identityHome, anchorFile, codexHome, invocation, LABEL } from './host.js'
+import { codexAnswerFallbackWorkdir, deniedAncestorOf } from '@agentchatme/agent-core/presets'
+import { CLIENT, identityHome, anchorFile, codexHome, invocation, LABEL, resolveRunWorkdir, runWorkdirFor } from './host.js'
 import { checkPlacement, placeAll, placementMark, skillPresent, unplaceIdentity, type PlacementIdentity } from './placement.js'
-import { codexIsLoggedIn, inspectCodexRuntime } from './runner.js'
+import { CodexRunner, codexIsLoggedIn, inspectCodexRuntime, profileNote } from './runner.js'
 import { listenerServiceCurrent, ensureListenerService } from './service.js'
 import { VERSION } from './version.js'
 
@@ -86,12 +96,20 @@ const profile: HostProfile = {
   },
   unplace: () => unplaceIdentity().map((s) => `  ${s.name}: ${s.detail}`),
   logoutHints: () => [`To remove the integration too, run \`${invocation()} uninstall\`.`],
-  extraDoctorChecks: async (ctx: DoctorContext): Promise<DoctorCheck[]> => [
-    ...runtimeChecks(),
-    ...(await placementChecks(ctx.fix === true, ctx, ctx.manual)),
-    serviceCheck(ctx.fix === true),
-    integrationCheck(),
-  ],
+  extraDoctorChecks: async (ctx: DoctorContext): Promise<DoctorCheck[]> => {
+    const runtime = await runtimeChecks()
+    return [
+      ...runtime,
+      ...(await placementChecks(ctx.fix === true, ctx, ctx.manual)),
+      serviceCheck(ctx.fix === true),
+      workdirCheck(),
+      profileCheck(),
+      // The runner's own gate needs a working, signed-in Codex first; the checks above say when it is not.
+      ...(runtime.every((c) => c.verdict === 'PASS') ? [await preflightCheck()] : []),
+      integrationCheck(),
+      ...[leaseCheck()].filter((c): c is DoctorCheck => c !== null),
+    ]
+  },
   // The shared status already fetched the served texts once; the placement
   // checks reuse the identity line, its template and the announced manual
   // rather than fetching `/v1/texts` again.
@@ -110,15 +128,15 @@ function concise(value: string): string {
   return value.replace(/\s+/g, ' ').trim().slice(0, 180)
 }
 
-function runtimeChecks(): DoctorCheck[] {
-  const runtime = inspectCodexRuntime(codexHome())
+async function runtimeChecks(): Promise<DoctorCheck[]> {
+  const runtime = await inspectCodexRuntime(codexHome())
   if (!runtime.ok) {
     return [
       { name: 'codex-cli', verdict: 'FAIL', detail: runtime.detail },
       { name: 'codex-auth', verdict: 'FAIL', detail: 'cannot check until the Codex CLI works' },
     ]
   }
-  const auth = codexIsLoggedIn(codexHome())
+  const auth = await codexIsLoggedIn(codexHome())
   return [
     { name: 'codex-cli', verdict: 'PASS', detail: concise(runtime.detail) },
     { name: 'codex-auth', verdict: auth.ok ? 'PASS' : 'FAIL', detail: auth.ok ? 'Codex is signed in; headless runs can start' : concise(auth.detail) },
@@ -159,23 +177,154 @@ function serviceCheck(fix: boolean): DoctorCheck {
   return { name: 'service', verdict: state === 'down' ? 'FAIL' : 'PASS', detail: `${state}; service definition and daemon bundle match ${VERSION}` }
 }
 
+/**
+ * The profile and working root runs use: the daemon's own, from its status
+ * file (it records both), when it has written one; this shell's switches
+ * otherwise (install, `daemon install` and `doctor --fix` write the service
+ * from them). `differs` names what this shell would change on the next of those.
+ */
+function runSettings(): { profile: RunProfile; workdir: string; differs: string | null } {
+  const shell = { profile: resolveRunProfile(), workdir: resolveRunWorkdir(identityHome()) }
+  const status = readIntegrationStatus(identityHome())
+  if (status === null || !isRunProfile(status.profile)) return { ...shell, differs: null }
+  const recorded = { profile: status.profile, workdir: status.workdir ?? shell.workdir }
+  const changes = [
+    recorded.profile !== shell.profile ? `profile ${shell.profile}` : null,
+    path.resolve(recorded.workdir) !== shell.workdir ? `working root ${shell.workdir}` : null,
+  ].filter((c): c is string => c !== null)
+  return { ...recorded, differs: changes.length > 0 ? changes.join(' and ') : null }
+}
+
+/** ` (the daemon's; … from this shell would set …)` when the daemon's settings are not this shell's. */
+function settingsNote(settings: ReturnType<typeof runSettings>): string {
+  return settings.differs !== null ? ` (the daemon's, from its status; install, \`daemon install\` or \`doctor --fix\` from this shell would set ${settings.differs})` : ''
+}
+
+/** The runner the daemon builds, for the settings it runs with (`runSettings`), its hosted server's URL pinned as the daemon pins it. */
+function daemonRunner(settings: ReturnType<typeof runSettings> = runSettings()): CodexRunner {
+  const apiBase = resolveIdentity(identityHome())?.apiBase ?? DEFAULT_API_BASE
+  return new CodexRunner({ codexHome: codexHome(), identityHome: identityHome(), workdir: settings.workdir, profile: settings.profile, pinMcpUrl: hostedMcpUrl(apiBase) })
+}
+
+/**
+ * The run's working root. One that is the home folder or contains it is no
+ * answer run's (those work in an empty folder of their own), and `work`/`full`
+ * runs there would see the whole home. One that contains `$CODEX_HOME` holds
+ * the key (`.env`, `agentchat/credentials`), which an answer run's
+ * `apply_patch` could then read.
+ */
+export function workdirCheck(): DoctorCheck {
+  const settings = runSettings()
+  const workdir = settings.workdir
+  const note = settingsNote(settings)
+  const fix = `point AGENTCHAT_RUN_CWD at a folder of its own (or unset it for ${runWorkdirFor(identityHome())}), then \`${invocation()} daemon install\``
+  if (workdirExposesHome(workdir)) {
+    return {
+      name: 'run-workdir',
+      verdict: 'WARN',
+      detail: `${workdir}${note} is your home folder or contains it — ${
+        settings.profile === 'answer' ? `answer runs work in ${codexAnswerFallbackWorkdir(codexHome())} instead` : "a run started by a peer's message there can see everything under it"
+      }; ${fix}`,
+    }
+  }
+  if (deniedAncestorOf(codexHome(), [workdir]) !== null) {
+    const what = path.resolve(workdir) === codexHome() ? 'is $CODEX_HOME' : `contains ${codexHome()}`
+    return { name: 'run-workdir', verdict: 'WARN', detail: `${workdir}${note} ${what}, where the key is (.env, agentchat/credentials): a run working there can read it — ${fix}` }
+  }
+  return { name: 'run-workdir', verdict: 'PASS', detail: `${workdir}${note}` }
+}
+
+/**
+ * What a run started by a peer's message may do. `answer`: the AgentChat tools
+ * and nothing else. `work` and `full` are the operator's opt-in, said with the
+ * engine's own warning (`runProfileWarning`).
+ */
+export function profileCheck(): DoctorCheck {
+  const settings = runSettings()
+  const warning = runProfileWarning(settings.profile)
+  if (warning !== null) return { name: 'run-profile', verdict: 'WARN', detail: `${settings.profile}: ${warning}${settingsNote(settings)} (AGENTCHAT_RUN_PROFILE; answer is the default)` }
+  return {
+    name: 'run-profile',
+    verdict: settings.differs !== null ? 'WARN' : 'PASS',
+    detail: `answer: the AgentChat tools only — no shell, no web, no file tool (apply_patch reads ${daemonRunner(settings).workdir()} alone and writes nothing), no other MCP server, no project AGENTS.md; ${anchorFile()} is still in its context${settingsNote(settings)}`,
+  }
+}
+
+/**
+ * The runner's own preflight: the gate the daemon applies before it holds the
+ * socket, in its exact words. For an answer run that includes the listing of
+ * Codex's MCP servers (`codex mcp list --json` with the answer flags, from the
+ * run's working root): a server no `-c` key can switch off (a `.` in its name)
+ * stops answer runs. Like the daemon, it creates the working root when there
+ * is none.
+ */
+export async function preflightCheck(): Promise<DoctorCheck> {
+  const pre = await daemonRunner().preflight()
+  return pre.ok
+    ? { name: 'run-preflight', verdict: 'PASS', detail: 'the daemon can start a run (the runner\'s preflight passes)' }
+    : { name: 'run-preflight', verdict: 'FAIL', detail: `no run starts: ${pre.detail ?? 'the runner\'s preflight failed'}` }
+}
+
 function integrationCheck(): DoctorCheck {
   const home = identityHome()
   if (readCredentials(home) === null) return { name: 'integration', verdict: 'PASS', detail: 'no identity — the daemon idles by design' }
   const status = readIntegrationStatus(home)
   if (status === null) return { name: 'integration', verdict: 'WARN', detail: 'no status written yet — the daemon has not run, or is still starting' }
+  // Every daemon rewrites its status while it runs — one standing by or waiting to serve again too — so an old file is a daemon that is down.
   const age = integrationStatusAge(status) ?? Number.POSITIVE_INFINITY
   if (age > 3 * 60_000) return { name: 'integration', verdict: 'FAIL', detail: `status last written ${Math.round(age / 60_000)} min ago — the daemon is not running` }
   if (status.socket === 'off') return { name: 'integration', verdict: 'PASS', detail: `${integrationDisabledBy() ?? INTEGRATION_ENV}=off — resident, holding no socket` }
+  // A home that cannot serve gave the agent up (no socket, no run): what it said and what clears it,
+  // as the shared `runs` check above says it in full.
+  const gaveUp = status.unservable ?? null
+  if (gaveUp !== null) return { name: 'integration', verdict: 'FAIL', detail: gaveUpLine(gaveUp) }
+  // One agent, one listener: another daemon (the CLI listener, say) serves this agent from its own home.
+  const standby = status.standby ?? null
+  if (standby !== null) {
+    return {
+      name: 'integration',
+      verdict: 'WARN',
+      detail: `standing by — ${standby.home ?? 'another identity home'}${standby.pid !== null ? ` (pid ${standby.pid})` : ''} serves this agent; this daemon holds no socket and starts no run while it does, and takes over when it stops`,
+    }
+  }
   if (status.socket === 'ready') {
     const texts = status.texts?.source ?? 'none'
+    // The daemon's own recheck after runs that did not get done (the `runs` check above is its FAIL).
+    const failing = status.runs_failing ?? null
+    if (failing !== null) {
+      return { name: 'integration', verdict: 'WARN', detail: `socket ready, but runs are failing: ${failing.reason} (since ${failing.since}, ${failing.runs_missed} run(s) missed)` }
+    }
     return {
       name: 'integration',
       verdict: texts === 'none' ? 'WARN' : 'PASS',
-      detail: `socket ready (acks on receipt), ${status.wakes} wake(s), ${status.runs_started} run(s) (${status.runs_ok} ok), texts ${texts === 'server' ? 'served' : texts === 'cache' ? 'from cache' : 'NOT fetched yet'}, profile ${status.profile}`,
+      detail: `socket ready (acks on receipt), ${status.wakes} wake(s), ${status.runs_started} run(s) (${status.runs_ok} ok), texts ${texts === 'server' ? 'served' : texts === 'cache' ? 'from cache' : 'NOT fetched yet'}, profile ${status.profile}${profileNote(status.profile)}`,
     }
   }
+  // Not serving for another reason, in the daemon's own words (not connecting yet, say).
   return { name: 'integration', verdict: 'WARN', detail: `socket ${status.socket}${status.last_error ? ` — ${status.last_error}` : ''}` }
+}
+
+/**
+ * Why this home gave its agent up and what clears it (the engine's
+ * `unservable`): a refused key until a sign-in the server accepts; runs failing
+ * (given up only to a healthy listener that was waiting) until a runtime check
+ * passes. Either way it takes the agent back whenever no other listener holds it.
+ */
+export function gaveUpLine(gaveUp: IntegrationUnservable): string {
+  return gaveUp.reason === 'key_refused'
+    ? `this home gave the agent up: the server refuses its key (${gaveUp.detail}); signing in again here (\`${invocation()} login\` or \`recover\`) clears this at once — or log out here if another home serves the agent; it looks again at ${gaveUp.retry_at}`
+    : `this home gave the agent up to another listener that was waiting: ${gaveUp.detail} (since ${gaveUp.since}); a runtime check that passes clears this (next at ${gaveUp.retry_at}, every 60 s), and it takes the agent back whenever no other listener holds it`
+}
+
+/** Lock renewals that failed (the engine's `lease_errors`): a lock that cannot be renewed for 45 s is given up. Null when none did. */
+function leaseCheck(): DoctorCheck | null {
+  const errors = readIntegrationStatus(identityHome())?.lease_errors ?? null
+  if (errors === null || errors.count === 0) return null
+  return {
+    name: 'locks',
+    verdict: 'WARN',
+    detail: `${errors.count} lock renewal(s) failed${errors.last ? ` (last: ${errors.last})` : ''}; a lock that cannot be renewed for 45 s is given up — check that ${identityHome()} and ${agentLockDir()} are there and writable`,
+  }
 }
 
 const commands = createIdentityCommands(profile)
