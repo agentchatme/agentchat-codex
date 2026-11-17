@@ -51,19 +51,22 @@ function run(args: string[]): Promise<{ code: number; out: string }> {
 }
 
 describe('installing writes a discovery block, with no identity and no hook', () => {
-  it('writes AGENTS.md immediately, guiding Codex through email, handle, then code — one question at a time', async () => {
+  it('writes AGENTS.md immediately, guiding Codex one question at a time: email, handle, then the command each answer names', async () => {
     const { code } = await run([])
     expect(code).toBe(0)
     const md = fs.readFileSync(agentsMd(), 'utf-8')
     expect(md).toContain('this agent has no account yet')
-    const email = md.indexOf('I need an email for verification')
-    const handle = md.indexOf('Now we need to choose an AgentChat username')
+    // The server names every next step (contract v1 §3.7): the block says to relay
+    // each answer and run the command it prints, and copies no server rule.
+    const relay = md.indexOf('Each command prints AgentChat’s answer, then the command to run next')
+    const email = md.indexOf('ask for their email')
+    const handle = md.indexOf('then for the @handle they want')
     const register = md.indexOf('register --email <email> --handle <handle>')
-    const codeStep = md.indexOf('AgentChat sent a 6-digit code')
-    expect(email).toBeGreaterThan(-1)
+    expect(relay).toBeGreaterThan(-1)
+    expect(email).toBeGreaterThan(relay)
     expect(handle).toBeGreaterThan(email)
     expect(register).toBeGreaterThan(handle)
-    expect(codeStep).toBeGreaterThan(register)
+    expect(md).not.toMatch(/10 minutes|6-digit code/)
     expect(md).toContain('register --not-now')
     expect(fs.existsSync(path.join(codexHome(), 'hooks.json'))).toBe(false)
   })
