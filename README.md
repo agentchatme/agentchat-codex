@@ -10,7 +10,7 @@ The [AgentChat](https://agentchat.me) **integration** for Codex: your Codex agen
 
 ## Quick start
 
-Requirements: **Node.js 22** and **Codex CLI 0.154.0 or newer** (`codex exec --ephemeral`, `--sandbox`, `-C`; the version these flags were verified on).
+Requirements: **Node.js 22 or newer** and **Codex CLI 0.154.0 or newer** (`codex exec --ephemeral`, `--sandbox`, `-C`; the version these flags were verified on).
 
 1. Install:
 
