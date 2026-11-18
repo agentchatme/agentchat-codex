@@ -20,18 +20,26 @@ import {
   type ServedManual,
 } from '@agentchatme/agent-core'
 import { API_KEY_ENV, CLIENT, MCP_SERVER_NAME, anchorFile, configPath, dotEnvPath, hooksPath, hostCopy, identityHome, skillDir, skillPath } from './host.js'
+import { headersHelperCommand, headersHelperPathFor, headersHelperProblem, headersHelperState, writeHeadersHelper } from './headers-helper.js'
 
 // ─── Placement: the four texts, where Codex loads them ──────────────────────
 //
-// 1. **The key** — `AGENTCHAT_API_KEY=<key>` in `$CODEX_HOME/.env` (mode 0600).
-//    Codex loads that file at startup (codex-rs/arg0 `load_dotenv`; only
-//    `CODEX_*` names are refused), so the variable exists in every Codex
-//    process without touching the user's shell.
+// 1. **The key** — in the identity home's `credentials` (0600) only. Codex
+//    gets it on each connection from the headers helper (headers-helper.ts):
+//    `http_headers_helper` names two quoted paths, Node and
+//    `<identity home>/bin/mcp-headers.mjs`, which prints the Authorization
+//    header from `credentials`. Releases up to 0.5.2 wrote
+//    `AGENTCHAT_API_KEY=<key>` into `$CODEX_HOME/.env`; Codex loads that file
+//    into its own environment at startup (codex-rs/arg0 `load_dotenv`), and a
+//    session's commands inherit Codex's environment (`shell_environment_policy`
+//    defaults to `inherit = "all"` with the KEY/SECRET/TOKEN excludes off,
+//    codex-rs/config/src/shell_environment_policy.rs), so every command a
+//    session ran had the key. Placement now takes that line out — when it holds
+//    this agent's key; any other value is not this integration's to delete,
+//    and is said instead.
 // 2. **The tools** — `[mcp_servers.agentchat]` in `$CODEX_HOME/config.toml`:
-//    `url = "https://api.agentchat.me/mcp"` and
-//    `bearer_token_env_var = "AGENTCHAT_API_KEY"` (the streamable-HTTP transport
-//    fields in codex-rs/config/src/mcp_types.rs; the same two things
-//    `codex mcp add <name> --url <url> --bearer-token-env-var <var>` writes).
+//    `url = "https://api.agentchat.me/mcp"` and `http_headers_helper` (the
+//    streamable-HTTP transport fields in codex-rs/config/src/mcp_types.rs).
 //    Written as a fenced block (`# agentchat:start` / `# agentchat:end`) so an
 //    upgrade replaces it and uninstall strips it, byte-preserving outside the
 //    fence; a hand-written `[mcp_servers.agentchat]` outside the fence is never
@@ -119,9 +127,33 @@ export function upsertDotEnvLine(content: string, name: string, value: string): 
   return next
 }
 
-export function removeDotEnvLine(content: string, name: string): string {
-  const next = content.split(/\r?\n/).filter((line) => !lineSetsVariable(line, name))
-  return next.join('\n')
+/**
+ * Drop every line that sets `name` (to `value` only, when given); every other
+ * line is kept byte for byte, its line endings included. Pure.
+ */
+export function removeDotEnvLine(content: string, name: string, value?: string): string {
+  const eol = content.includes('\r\n') ? '\r\n' : '\n'
+  const next = content.split(/\r?\n/).filter((line) => !lineSetsVariable(line, name) || (value !== undefined && valueOfLine(line) !== value))
+  return next.join(eol)
+}
+
+/** The value a `NAME=value` (or `export NAME=value`) line sets, unquoted. */
+function valueOfLine(line: string): string {
+  return stripQuotes(line.slice(line.indexOf('=') + 1).trim())
+}
+
+/** Every value `.env` sets the key variable to, in order. */
+export function keysInDotEnv(): string[] {
+  try {
+    return fs
+      .readFileSync(dotEnvPath(), 'utf-8')
+      .split(/\r?\n/)
+      .filter((line) => lineSetsVariable(line, API_KEY_ENV))
+      .map(valueOfLine)
+      .filter((v) => v.length > 0)
+  } catch {
+    return []
+  }
 }
 
 function stripQuotes(value: string): string {
@@ -142,38 +174,90 @@ export function readKeyFromDotEnv(): string | undefined {
   return undefined
 }
 
-export function placeKey(apiKey: string): PlacementStep {
+/**
+ * Take this agent's key out of `$CODEX_HOME/.env`, where releases up to 0.5.2
+ * put it: only the lines that hold exactly this key (every other line is kept
+ * byte for byte; a file left empty is removed). Any other value is left where
+ * it is and said: it may be the only copy of someone's key.
+ */
+export function clearDotEnvKey(apiKey: string): PlacementStep {
+  const file = dotEnvPath()
+  const key = apiKey.trim()
+  try {
+    const held = keysInDotEnv()
+    if (held.length === 0) return { name: 'key', status: 'ok', detail: `the key is in ${path.join(identityHome(), 'credentials')} only (none in ${file})` }
+    const others = held.some((v) => v !== key)
+    if (held.includes(key)) {
+      const existing = fs.readFileSync(file, 'utf-8')
+      const next = removeDotEnvLine(existing, API_KEY_ENV, key)
+      if (next.trim().length === 0) fs.rmSync(file, { force: true })
+      else atomicWriteFile(file, next, fs.statSync(file).mode & 0o777)
+    }
+    if (others) {
+      return {
+        name: 'key',
+        status: 'warned',
+        detail: `${file} sets ${API_KEY_ENV} to a key that is not this agent's: Codex exports it to every command a session runs, and it no longer reaches the AgentChat tools — remove that line unless something else of yours needs it`,
+      }
+    }
+    return {
+      name: 'key',
+      status: 'changed',
+      detail: `${API_KEY_ENV} taken out of ${file} (an earlier release kept the key there, so Codex exported it to every command a session ran; a Codex already running keeps it until it restarts)`,
+    }
+  } catch (err) {
+    return { name: 'key', status: 'failed', detail: `could not update ${file}: ${String(err)}` }
+  }
+}
+
+/**
+ * For a `[mcp_servers.agentchat]` written by hand that reads its bearer token
+ * from `AGENTCHAT_API_KEY`: keep that variable in `.env` at this agent's key,
+ * as releases up to 0.5.2 did, so the entry keeps working across a new key.
+ * Said as a warning: Codex exports it to every command a session runs.
+ */
+export function keepDotEnvKeyForHandWritten(apiKey: string): PlacementStep {
   const trimmed = apiKey.trim()
+  const warning = `your own [mcp_servers.${MCP_SERVER_NAME}] reads ${API_KEY_ENV}, so this agent's key is kept in ${dotEnvPath()} — Codex exports it to every command a session runs; remove that entry (the installer then writes one that reads the key from ${path.join(identityHome(), 'credentials')}) to keep it out`
   if (!trimmed || /[\r\n#"'\s]/.test(trimmed)) return { name: 'key', status: 'failed', detail: 'the key is empty or contains characters a .env line cannot carry' }
   try {
     const file = dotEnvPath()
-    fs.mkdirSync(path.dirname(file), { recursive: true })
     const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : ''
     const next = upsertDotEnvLine(existing, API_KEY_ENV, trimmed)
-    if (next === existing) {
-      try {
-        fs.chmodSync(file, 0o600)
-      } catch {
-        /* best effort */
-      }
-      return { name: 'key', status: 'ok', detail: `${API_KEY_ENV} in ${file}` }
-    }
-    atomicWriteFile(file, next, 0o600)
-    return { name: 'key', status: 'changed', detail: `${API_KEY_ENV} in ${file} (Codex loads it at startup; a running Codex picks it up on its next start)` }
+    if (next !== existing) atomicWriteFile(file, next, 0o600)
+    return { name: 'key', status: 'warned', detail: warning }
   } catch (err) {
     return { name: 'key', status: 'failed', detail: `could not write ${API_KEY_ENV} to ${dotEnvPath()}: ${String(err)}` }
   }
 }
 
-export function removeKey(): PlacementStep {
+/** Whether a hand-written `[mcp_servers.agentchat]` names `AGENTCHAT_API_KEY` (its bearer variable). */
+export function handWrittenReadsKeyVariable(): boolean {
+  const text = handWrittenAgentchatServer(readConfigText())
+  return text !== null && new RegExp(`\\b${API_KEY_ENV}\\b`).test(text)
+}
+
+/**
+ * Logout and uninstall: the `.env` lines that hold this agent's key (`apiKey`)
+ * go. Without the key in hand nothing is removed, and any other value is left
+ * and said: it may be the only copy of someone's key.
+ */
+export function removeKey(apiKey: string | null): PlacementStep {
   const file = dotEnvPath()
   try {
-    if (!fs.existsSync(file)) return { name: 'key', status: 'ok', detail: `no ${API_KEY_ENV} to remove` }
-    const existing = fs.readFileSync(file, 'utf-8')
-    const next = removeDotEnvLine(existing, API_KEY_ENV)
-    if (next === existing) return { name: 'key', status: 'ok', detail: `no ${API_KEY_ENV} in ${file}` }
-    if (next.trim().length === 0) fs.rmSync(file, { force: true })
-    else atomicWriteFile(file, next, 0o600)
+    const held = keysInDotEnv()
+    if (held.length === 0) return { name: 'key', status: 'ok', detail: `no ${API_KEY_ENV} in ${file}` }
+    const key = apiKey?.trim() ?? null
+    const ours = key !== null && held.includes(key)
+    if (ours) {
+      const existing = fs.readFileSync(file, 'utf-8')
+      const next = removeDotEnvLine(existing, API_KEY_ENV, key)
+      if (next.trim().length === 0) fs.rmSync(file, { force: true })
+      else atomicWriteFile(file, next, fs.statSync(file).mode & 0o777)
+    }
+    if (held.some((v) => v !== key)) {
+      return { name: 'key', status: 'warned', detail: `${file} sets ${API_KEY_ENV} to a key that is not this agent's; left as it is — remove that line unless something else of yours needs it` }
+    }
     return { name: 'key', status: 'changed', detail: `${API_KEY_ENV} removed from ${file}` }
   } catch (err) {
     return { name: 'key', status: 'failed', detail: `could not update ${file}: ${String(err)}` }
@@ -183,7 +267,11 @@ export function removeKey(): PlacementStep {
 // ─── the tools: [mcp_servers.agentchat] in config.toml ──────────────────────
 
 function tomlBasicString(value: string): string {
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+  const escaped = value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/[\u0000-\u001f\u007f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+  return `"${escaped}"`
 }
 
 /** The header the hosted tool server reads the client's name from (core `client-context.ts`). */
@@ -204,12 +292,18 @@ export function mcpHttpHeadersLine(): string {
   return `http_headers = { ${pairs.join(', ')} }`
 }
 
-export function mcpBlock(apiBase: string): string {
+/** The helper command this release writes for the identity home (null: a path no shell quoting can carry). */
+export function currentHeadersHelperCommand(): string | null {
+  return headersHelperCommand(headersHelperPathFor(identityHome()))
+}
+
+export function mcpBlock(apiBase: string, helper: string): string {
   return [
     TOML_START,
     `[mcp_servers.${MCP_SERVER_NAME}]`,
     `url = "${hostedMcpUrl(apiBase)}"`,
-    `bearer_token_env_var = "${API_KEY_ENV}"`,
+    '# The key: Codex runs this on each connection and sends the Authorization header it prints, read from agentchat/credentials. No key in this file or in .env.',
+    `http_headers_helper = ${tomlBasicString(helper)}`,
     '# Names this runtime to the hosted tools: no wake-webhook tools for an agent the listener wakes.',
     mcpHttpHeadersLine(),
     'startup_timeout_sec = 30',
@@ -217,6 +311,20 @@ export function mcpBlock(apiBase: string): string {
     'default_tools_approval_mode = "approve"',
     TOML_END,
   ].join('\n')
+}
+
+/** The `http_headers_helper` value inside our fence, or undefined. */
+export function fencedHelperCommand(config: string): string | undefined {
+  const start = config.indexOf(TOML_START)
+  const end = config.indexOf(TOML_END)
+  if (start < 0 || end <= start) return undefined
+  const line = /^http_headers_helper = ("(?:[^"\\]|\\.)*")\s*$/m.exec(config.slice(start, end))
+  if (line === null) return undefined
+  try {
+    return JSON.parse(line[1]!) as string
+  } catch {
+    return undefined
+  }
 }
 
 export function upsertTomlBlock(existing: string, block: string): string {
@@ -281,6 +389,11 @@ function readConfigText(): string {
   }
 }
 
+/**
+ * `current`: our block, in this release's words, with a helper that works as
+ * written (our script, a Node that is there — not necessarily the Node this
+ * command runs on, so switching Node versions does not churn the file).
+ */
 export function inspectMcpBlock(apiBase: string): McpBlockState {
   let config = ''
   try {
@@ -289,17 +402,31 @@ export function inspectMcpBlock(apiBase: string): McpBlockState {
     return 'missing'
   }
   if (hasUnfencedAgentchatServer(config)) return 'foreign'
-  if (config.includes(mcpBlock(apiBase))) return 'current'
+  const helper = fencedHelperCommand(config)
+  if (helper !== undefined && headersHelperState(helper, identityHome()) === 'current' && config.includes(mcpBlock(apiBase, helper))) return 'current'
   return config.includes(TOML_START) ? 'stale' : 'missing'
 }
 
-export function placeMcp(apiBase: string): PlacementStep {
+export function placeMcp(apiBase: string, apiKey?: string): PlacementStep {
   const file = configPath()
   const state = inspectMcpBlock(apiBase)
   if (state === 'foreign') {
     return { name: 'mcp', status: 'skipped', detail: `${file} already defines [mcp_servers.${MCP_SERVER_NAME}] outside the agentchat block — left untouched; remove it and re-run if it is not yours` }
   }
-  if (state === 'current') return { name: 'mcp', status: 'ok', detail: `[mcp_servers.${MCP_SERVER_NAME}] → ${hostedMcpUrl(apiBase)} (bearer token from ${API_KEY_ENV}) in ${file}` }
+  try {
+    writeHeadersHelper(identityHome())
+  } catch (err) {
+    return { name: 'mcp', status: 'failed', detail: `could not write the headers helper ${headersHelperPathFor(identityHome())}: ${String(err)}` }
+  }
+  const keyNote = `the key stays in ${path.join(identityHome(), 'credentials')}; Codex asks ${headersHelperPathFor(identityHome())} for it`
+  if (state === 'current') return { name: 'mcp', status: 'ok', detail: `[mcp_servers.${MCP_SERVER_NAME}] → ${hostedMcpUrl(apiBase)} (${keyNote}) in ${file}` }
+  const helper = currentHeadersHelperCommand()
+  if (helper === null) {
+    return { name: 'mcp', status: 'failed', detail: `the path of Node (${process.execPath}) or of ${headersHelperPathFor(identityHome())} holds a character a shell command cannot carry quoted; move it, then re-run` }
+  }
+  // Before the old block is replaced: the helper, run as Codex runs it, yields this agent's key.
+  const problem = apiKey !== undefined ? headersHelperProblem(helper, apiKey, identityHome()) : null
+  if (problem !== null) return { name: 'mcp', status: 'failed', detail: `[mcp_servers.${MCP_SERVER_NAME}] left as it was: ${problem}` }
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true })
     const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : ''
@@ -309,14 +436,14 @@ export function placeMcp(apiBase: string): PlacementStep {
     } catch {
       /* new file: private */
     }
-    atomicWriteFile(file, upsertTomlBlock(existing, mcpBlock(apiBase)), mode)
-    return {
-      name: 'mcp',
-      status: 'changed',
-      detail: `[mcp_servers.${MCP_SERVER_NAME}] → ${hostedMcpUrl(apiBase)} (bearer token from ${API_KEY_ENV}) in ${file}${state === 'stale' ? ' (the previous entry was replaced)' : ''}`,
-    }
+    atomicWriteFile(file, upsertTomlBlock(existing, mcpBlock(apiBase, helper)), mode)
   } catch (err) {
     return { name: 'mcp', status: 'failed', detail: `could not write ${file}: ${String(err)}` }
+  }
+  return {
+    name: 'mcp',
+    status: 'changed',
+    detail: `[mcp_servers.${MCP_SERVER_NAME}] → ${hostedMcpUrl(apiBase)} (${keyNote}) in ${file}${state === 'stale' ? ' (the previous entry was replaced)' : ''}`,
   }
 }
 
@@ -542,8 +669,13 @@ export async function placeAll(identity: PlacementIdentity | null, manual: Serve
   if (legacy) steps.push(legacy)
   steps.push(await placeSkill(manual, identity?.apiBase ?? null))
   if (identity) {
-    steps.push(placeKey(identity.apiKey))
-    steps.push(placeMcp(identity.apiBase))
+    // The tools first: the key leaves .env only once our block, with the
+    // helper, serves it. A block written by hand that reads AGENTCHAT_API_KEY
+    // keeps it there, as before.
+    const mcp = placeMcp(identity.apiBase, identity.apiKey)
+    steps.push(mcp)
+    if (mcp.status === 'ok' || mcp.status === 'changed') steps.push(clearDotEnvKey(identity.apiKey))
+    else if (mcp.status === 'skipped' && handWrittenReadsKeyVariable()) steps.push(keepDotEnvKeyForHandWritten(identity.apiKey))
     steps.push(placeIdentityLine(identity.handle, identity.identityLine))
   } else {
     steps.push(placeOffer())
@@ -551,18 +683,28 @@ export async function placeAll(identity: PlacementIdentity | null, manual: Serve
   return steps
 }
 
-/** Logout: the key leaves Codex; the MCP block (a template on the variable), the manual and the skill stay. */
-export function unplaceIdentity(): PlacementStep[] {
-  return [removeKey(), placeOffer()]
+/**
+ * Logout: the credential is gone, so the helper yields no key; an
+ * `AGENTCHAT_API_KEY` line an earlier release left in `.env` goes too. The
+ * MCP block, the manual and the skill stay.
+ */
+export function unplaceIdentity(apiKey: string | null): PlacementStep[] {
+  return [removeKey(apiKey), placeOffer()]
 }
 
 /** Uninstall: everything this integration placed, the identity line included. */
-export function removePlacement(): PlacementStep[] {
+export function removePlacement(apiKey: string | null): PlacementStep[] {
   const steps: PlacementStep[] = []
   const legacy = removeLegacyWiring()
   if (legacy) steps.push(legacy)
-  steps.push(removeKey())
+  steps.push(removeKey(apiKey))
   steps.push(removeMcp())
+  try {
+    // The helper holds no key; with the block gone nothing runs it.
+    fs.rmSync(headersHelperPathFor(identityHome()), { force: true })
+  } catch {
+    /* a locked file stays inert */
+  }
   steps.push(removeSkill())
   try {
     steps.push({ name: 'identity', status: removeAnchorAt(anchorFile()) === 'removed' ? 'changed' : 'ok', detail: `${path.basename(anchorFile())} AgentChat block removed` })
@@ -627,17 +769,31 @@ export function checkPlacement(identity: PlacementIdentity | null, manual: Serve
   const checks: PlacementCheck[] = []
   if (identity) {
     checks.push(identityCheck(identity))
-    const inDotEnv = readKeyFromDotEnv()
-    checks.push({
-      name: 'key',
-      ok: inDotEnv === identity.apiKey,
-      detail:
-        inDotEnv === identity.apiKey
-          ? `${API_KEY_ENV} in ${dotEnvPath()} matches this agent's credentials`
-          : inDotEnv === undefined
-            ? `${API_KEY_ENV} is not in ${dotEnvPath()} — the hosted tools cannot authenticate`
-            : `${API_KEY_ENV} in ${dotEnvPath()} differs from this agent's credentials`,
-    })
+    const inDotEnv = keysInDotEnv()
+    const handWritten = inspectMcpBlock(identity.apiBase) === 'foreign' && handWrittenReadsKeyVariable()
+    checks.push(
+      handWritten
+        ? {
+            name: 'key',
+            ok: inDotEnv.length > 0 && inDotEnv.every((v) => v === identity.apiKey),
+            verdict: inDotEnv.length > 0 && inDotEnv.every((v) => v === identity.apiKey) ? 'WARN' : 'FAIL',
+            detail:
+              inDotEnv.length > 0 && inDotEnv.every((v) => v === identity.apiKey)
+                ? `in ${dotEnvPath()} for your own [mcp_servers.${MCP_SERVER_NAME}], which reads ${API_KEY_ENV}: Codex exports it to every command a session runs`
+                : `your own [mcp_servers.${MCP_SERVER_NAME}] reads ${API_KEY_ENV}, and ${dotEnvPath()} does not hold this agent's key there`,
+          }
+        : {
+            name: 'key',
+            ok: inDotEnv.length === 0,
+            ...(inDotEnv.some((v) => v !== identity.apiKey) ? { verdict: 'WARN' as const } : {}),
+            detail:
+              inDotEnv.length === 0
+                ? `in ${path.join(identityHome(), 'credentials')} only`
+                : inDotEnv.some((v) => v !== identity.apiKey)
+                  ? `${dotEnvPath()} sets ${API_KEY_ENV} to a key that is not this agent's: Codex exports it to every command a session runs, and it no longer reaches the AgentChat tools — remove that line unless something else of yours needs it`
+                  : `${dotEnvPath()} still holds this agent's key (an earlier release put it there), so Codex exports it to every command a session runs — install or \`doctor --fix\` takes it out`,
+          },
+    )
   }
   const skill = checkManual({ path: skillPath(), served: manual, apiBase: identity?.apiBase ?? null })
   // `unchecked` (nothing announced: no account yet, or offline with nothing
@@ -646,23 +802,27 @@ export function checkPlacement(identity: PlacementIdentity | null, manual: Serve
   checks.push({ name: 'manual', ok: skill.state === 'current' || skill.state === 'unchecked', verdict: skill.verdict, detail: skill.detail })
   const mcp = inspectMcpBlock(identity?.apiBase ?? process.env['AGENTCHAT_API_BASE']?.trim() ?? 'https://api.agentchat.me')
   const handWrittenNamesClient = mcp === 'foreign' && handWrittenSendsClientHeader(readConfigText())
+  // Only for a block that is otherwise right: run its helper the way Codex will.
+  const helperProblem = mcp === 'current' && identity ? headersHelperProblem(fencedHelperCommand(readConfigText()), identity.apiKey, identityHome()) : null
   checks.push({
     name: 'mcp',
     // A hand-written entry is the user's: nothing for this integration to
     // repair (ok), but said — a WARN — when it does not name this runtime to
     // the hosted tools: they then show it the wake-webhook tools, a second
     // way of being woken it does not need.
-    ok: mcp === 'current' || mcp === 'foreign',
+    ok: (mcp === 'current' && helperProblem === null) || mcp === 'foreign',
     ...(mcp === 'foreign' && !handWrittenNamesClient ? { verdict: 'WARN' as const } : {}),
     detail:
       mcp === 'current'
-        ? `[mcp_servers.${MCP_SERVER_NAME}] → hosted tools, bearer token from ${API_KEY_ENV}, named as Codex ${CLIENT.version}`
+        ? helperProblem !== null
+          ? `[mcp_servers.${MCP_SERVER_NAME}]: ${helperProblem}`
+          : `[mcp_servers.${MCP_SERVER_NAME}] → hosted tools, the key from ${headersHelperPathFor(identityHome())} (it reads ${path.join(identityHome(), 'credentials')}), named as Codex ${CLIENT.version}`
         : mcp === 'foreign'
           ? handWrittenNamesClient
             ? `[mcp_servers.${MCP_SERVER_NAME}] is managed by hand in ${configPath()}`
             : `[mcp_servers.${MCP_SERVER_NAME}] is managed by hand in ${configPath()} and does not send ${CLIENT_HEADER}, so the hosted tools take this agent for an unknown client and show it the wake-webhook tools — add \`${mcpHttpHeadersLine()}\` to it`
           : mcp === 'stale'
-            ? `the agentchat block in ${configPath()} is from an older release`
+            ? `the agentchat block in ${configPath()} is from an older release, or its headers helper (${headersHelperPathFor(identityHome())}) or its Node is gone`
             : `no [mcp_servers.${MCP_SERVER_NAME}] in ${configPath()} — the agent has no AgentChat tools`,
   })
   const leftovers = [legacyHooksPresent() ? 'hooks in hooks.json' : null, legacyBundlePresent() ? 'stable CLI bundle' : null].filter((v): v is string => v !== null)

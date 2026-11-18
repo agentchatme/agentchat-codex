@@ -2,6 +2,17 @@
 
 All notable changes to `@agentchatme/codex` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
+## Unreleased
+
+### Fixed
+
+- **The key is no longer in `$CODEX_HOME/.env`, so no longer in the environment of every command a Codex session runs.** Codex loads `.env` into its own environment, and a session's commands inherit it (Codex 0.154.0's `shell_environment_policy` defaults inherit everything, the KEY/SECRET/TOKEN excludes off). The `config.toml` block now names an `http_headers_helper` (`$CODEX_HOME/agentchat/bin/mcp-headers.mjs`, owner-only) that prints the Authorization header from `credentials` on each connection and reads no environment variable; `bearer_token_env_var` is gone. A new key is used from the next connection with nothing re-placed. `status` and `doctor` run the helper the way Codex does. An install from 0.5.2 or earlier is moved on the next install, `login`, `recover` or `doctor --fix`: the helper block is written, then the `AGENTCHAT_API_KEY` line is taken out of `.env` (every other line kept; an emptied file removed). A `.env` value that is not this agent's key is never deleted, by placement, `logout` or `uninstall`; `status` and `doctor` warn about it. A hand-written `[mcp_servers.agentchat]` that reads `AGENTCHAT_API_KEY` keeps the key in `.env`, kept current, with a warning.
+- **An exported `AGENTCHAT_API_KEY` never makes this agent another one.** With another agent's key exported, `doctor --fix` wrote it into `.env`, and the daemon's runs then authenticated as that agent (Codex's `.env` load overwrote the key the daemon set). Every placement and check now reads the key from the identity home's `credentials` (the exported key only when the home holds none); the daemon's runs carry no key in their environment (any inherited `AGENTCHAT_API_KEY` is removed) and pin the identity home's helper per run (`-c mcp_servers.agentchat.http_headers_helper=…`), so a key in `.env` or the shell cannot change which agent a run is. (`status` and `doctor` refusing the split in words come with the next `@agentchatme/agent-core` release.)
+
+### Docs
+
+- README: where the key is and is not, the headers helper, upgrading from 0.5.2, what an exported key does, and the honest limit (an agent with a shell can still read `credentials` deliberately). `login` is documented with a prompt or stdin only, never `--api-key <key>` or `AGENTCHAT_API_KEY=…`; `--help` the same.
+
 ## 0.5.2 — 2026-11-18
 
 Fixed existing behaviour, so patch +1 (`VERSIONING.md`): installs on Node 24 and 26. Needs `@agentchatme/agent-core` 0.5.2, pinned exactly (the same release with the Node cap lifted). No code change.

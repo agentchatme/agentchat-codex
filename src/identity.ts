@@ -17,7 +17,6 @@ import {
   recordOfferDeclined,
   renderAnchorBlock,
   renderDeclinedBlock,
-  resolveIdentity,
   resolveRunProfile,
   runProfileWarning,
   workdirExposesHome,
@@ -37,6 +36,7 @@ import { checkPlacement, placeAll, placementMark, skillPresent, unplaceIdentity,
 import { CodexRunner, codexIsLoggedIn, inspectCodexRuntime, profileNote } from './runner.js'
 import { listenerServiceCurrent, ensureListenerService } from './service.js'
 import { VERSION } from './version.js'
+import { homeIdentity } from './home-identity.js'
 
 // ─── This agent, described once ─────────────────────────────────────────────
 //
@@ -56,7 +56,7 @@ export interface ServedIdentityTexts {
 const NO_IDENTITY_TEXTS: ServedIdentityTexts = { identityLine: null, identityLineTemplate: null }
 
 export function currentPlacementIdentity(texts: ServedIdentityTexts = NO_IDENTITY_TEXTS): PlacementIdentity | null {
-  const identity = resolveIdentity(identityHome())
+  const identity = homeIdentity(identityHome())
   if (identity === null || identity.handle === null) return null
   return { handle: identity.handle, apiKey: identity.apiKey, apiBase: identity.apiBase, identityLine: texts.identityLine, identityLineTemplate: texts.identityLineTemplate }
 }
@@ -90,11 +90,13 @@ const profile: HostProfile = {
   // the identity line and the manual they announce. Placing needs no
   // template: the block is found by its fences and replaced in place.
   place: async (handle, apiKey, identityLine, manual) => {
-    const identity = resolveIdentity(identityHome())
+    const identity = homeIdentity(identityHome())
     const steps = await placeAll({ handle, apiKey, apiBase: identity?.apiBase ?? 'https://api.agentchat.me', identityLine, identityLineTemplate: null }, manual)
     return steps.map((s) => `  ${s.status === 'failed' ? 'FAILED' : s.name}: ${s.detail}`)
   },
-  unplace: () => unplaceIdentity().map((s) => `  ${s.name}: ${s.detail}`),
+  // agent-core resolves the identity BEFORE it clears the credential: only a
+  // key that came from the credential file is this agent's to take out of .env.
+  unplace: (identity) => unplaceIdentity(identity?.source === 'file' ? identity.apiKey : null).map((s) => `  ${s.name}: ${s.detail}`),
   logoutHints: () => [`To remove the integration too, run \`${invocation()} uninstall\`.`],
   extraDoctorChecks: async (ctx: DoctorContext): Promise<DoctorCheck[]> => {
     const runtime = await runtimeChecks()
@@ -202,7 +204,7 @@ function settingsNote(settings: ReturnType<typeof runSettings>): string {
 
 /** The runner the daemon builds, for the settings it runs with (`runSettings`), its hosted server's URL pinned as the daemon pins it. */
 function daemonRunner(settings: ReturnType<typeof runSettings> = runSettings()): CodexRunner {
-  const apiBase = resolveIdentity(identityHome())?.apiBase ?? DEFAULT_API_BASE
+  const apiBase = homeIdentity(identityHome())?.apiBase ?? DEFAULT_API_BASE
   return new CodexRunner({ codexHome: codexHome(), identityHome: identityHome(), workdir: settings.workdir, profile: settings.profile, pinMcpUrl: hostedMcpUrl(apiBase) })
 }
 
