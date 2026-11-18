@@ -42,9 +42,9 @@ export function hooksPath(): string {
 
 /**
  * Codex loads environment variables from `$CODEX_HOME/.env` at startup
- * (codex-rs/arg0: `load_dotenv`, every variable except `CODEX_*`). The key
- * lives here and `config.toml` names it by variable (`bearer_token_env_var`),
- * so the key never lands in `config.toml`.
+ * (codex-rs/arg0: `load_dotenv`, every variable except `CODEX_*`), and a
+ * session's commands inherit them. Releases up to 0.5.2 kept the key here;
+ * placement now takes this agent's key out (placement.ts).
  */
 export function dotEnvPath(): string {
   return path.join(codexHome(), '.env')
@@ -117,7 +117,7 @@ export function supersededServiceLabels(): string[] {
  */
 export const MCP_SERVER_NAME = 'agentchat'
 
-/** The variable `config.toml` names for the bearer token, and the `.env` line's key. */
+/** The `.env` line an earlier release wrote the key under; never set in a run's environment. */
 export const API_KEY_ENV = 'AGENTCHAT_API_KEY'
 
 /** Exactly what a user types to reach this integration. */

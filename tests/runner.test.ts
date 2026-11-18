@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { manualPointer, PEER_RUN_WARNING } from '@agentchatme/agent-core'
 import { codexRunArgs } from '@agentchatme/agent-core/presets'
 import { CodexRunner, profileNote, runPointer } from '../src/runner.js'
+import { headersHelperCommand, headersHelperPathFor } from '../src/headers-helper.js'
 import { installFakeCodex, readListings, readRuns, type FakeCodex } from './helpers/fake-codex.js'
 
 // ─── One headless Codex run: the exact flags, the prompt on stdin ───────────
@@ -20,6 +22,9 @@ let workdir: string
 let codexHome: string
 let identityHome: string
 const KEY = 'ac_live_' + 'k'.repeat(40)
+const OTHER_KEY = 'ac_live_' + 'o'.repeat(40)
+/** `-c mcp_servers.agentchat.http_headers_helper=<the identity home's helper>`, as every run of this integration carries it. */
+const HELPER_PIN = (): string[] => ['-c', `mcp_servers.agentchat.http_headers_helper=${JSON.stringify(headersHelperCommand(headersHelperPathFor(identityHome))!)}`]
 const originalPath = process.env['PATH']
 /** What the runner reads from the process environment, cleared for each test and put back after. */
 const SCRUBBED = ['HOME', 'USERPROFILE', 'AGENTCHAT_API_KEY', 'AGENTCHAT_API_BASE', 'CODEX_HOME', 'AGENTCHAT_RUN_PROFILE', 'AGENTCHAT_RUN_CWD'] as const
@@ -176,14 +181,14 @@ describe('CodexRunner', () => {
     expect(JSON.stringify(outcome)).not.toContain('Peer text')
 
     const [listing] = readListings(fake)
-    expect(listing!.argv).toEqual(['mcp', 'list', '--json', ...ANSWER_FLAGS])
+    expect(listing!.argv).toEqual(['mcp', 'list', '--json', ...ANSWER_FLAGS, ...HELPER_PIN()])
     expect(fs.realpathSync(listing!.cwd)).toBe(fs.realpathSync(workdir))
 
     const runs = readRuns(fake)
     expect(runs).toHaveLength(1)
     const run = runs[0]!
-    // Only agentchat is listed: nothing to switch off, the argv is the answer argv as it stands.
-    expect(run.argv).toEqual(codexRunArgs('answer', { workdir }))
+    // Only agentchat is listed: nothing to switch off, the argv is the answer argv with the identity home's helper pinned.
+    expect(run.argv).toEqual([...codexRunArgs('answer', { workdir }).slice(0, -1), ...HELPER_PIN(), '-'])
     // The whole multi-line prompt arrives on stdin, byte for byte — on Windows
     // an argument would be cut at the first line break by cmd.exe.
     expect(run.stdin).toBe(prompts.wake)
@@ -193,8 +198,8 @@ describe('CodexRunner', () => {
     expect(run.stdin).not.toMatch(/gate step/i)
     expect(fs.realpathSync(run.cwd)).toBe(fs.realpathSync(workdir))
     expect(run.env['CODEX_HOME']).toBe(codexHome)
-    // config.toml's [mcp_servers.agentchat] reads its bearer token from here; with no shell the model cannot print it.
-    expect(run.env['AGENTCHAT_API_KEY']).toBe(KEY)
+    // No key in a run's environment: the hosted server's Authorization comes from the helper, which reads the identity file.
+    expect(run.env['AGENTCHAT_API_KEY']).toBeUndefined()
     expect(run.env['CODEX_SANDBOX']).toBeUndefined() // a parent Codex session's marker is not the run's
     expect(run.stdinIsTTY).toBe(false)
   })
@@ -211,13 +216,14 @@ describe('CodexRunner', () => {
     const run = readRuns(fake)[0]!
     expect(run.argv).toEqual([
       ...codexRunArgs('answer', { workdir }).slice(0, -1),
+      ...HELPER_PIN(),
       '-c',
       'mcp_servers.github.enabled=false',
       '-c',
       'mcp_servers.computer-use.enabled=false',
       '-',
     ])
-    expect(run.argv.join(' ')).not.toContain('mcp_servers.agentchat')
+    expect(run.argv.join(' ')).not.toContain('mcp_servers.agentchat.enabled')
     expect(run.argv.join(' ')).not.toContain('off-already')
   })
 
@@ -270,7 +276,7 @@ describe('CodexRunner', () => {
     await runner('work').start({ kind: 'invite', prompt: prompts.invite, runId: 'r6', budgetMs: 10_000 })
     const run = readRuns(fake)[0]!
     expect(run.stdin).toBe(prompts.invite)
-    expect(run.argv).toEqual(codexRunArgs('work', { workdir }))
+    expect(run.argv).toEqual([...codexRunArgs('work', { workdir }).slice(0, -1), ...HELPER_PIN(), '-'])
     expect(readListings(fake)).toEqual([])
   })
 
@@ -298,20 +304,37 @@ describe('CodexRunner', () => {
   })
 })
 
-describe('the integration\'s runs keep the config.toml hosted server', () => {
+describe('the integration\'s runs keep the config.toml hosted server, and no key rides in their environment', () => {
   // `agentchat listen --preset codex` overrides `[mcp_servers.agentchat]` per run
   // (`-c mcp_servers.agentchat.*`, its own key variable). This integration's runs
-  // must not: they use the entry the installer placed in config.toml, keyed by
-  // AGENTCHAT_API_KEY, exactly as before the presets moved. (An answer run's
+  // use the entry the installer placed in config.toml, with the identity home's
+  // headers helper pinned: the key reaches the hosted server from the identity
+  // file, never through the run's environment, where Codex's own `.env` load
+  // would overwrite it (a foreign key there made runs another agent) and every command a work or full
+  // run starts would inherit it. (An answer run's
   // `-c mcp_servers.<other>.enabled=false` switches OTHER servers off.)
-  it('no profile overrides mcp_servers.agentchat; the key rides in AGENTCHAT_API_KEY', () => {
+  it('every profile pins the helper and nothing else of the table; no key in the environment, even one the daemon inherited', () => {
     for (const profile of ['answer', 'work', 'full'] as const) {
-      const r = runner(profile)
-      expect(r.args().some((a) => a.startsWith('mcp_servers.agentchat'))).toBe(false)
+      const r = runner(profile, { AGENTCHAT_API_KEY: OTHER_KEY })
+      expect(r.args().filter((a) => a.startsWith('mcp_servers.agentchat'))).toEqual([HELPER_PIN()[1]])
+      expect(r.args().at(-1)).toBe('-')
       const childEnv = r.env()
-      expect(childEnv['AGENTCHAT_API_KEY']).toBe(KEY)
+      expect(childEnv['AGENTCHAT_API_KEY']).toBeUndefined()
       expect(childEnv['AGENTCHAT_LISTENER_API_KEY']).toBeUndefined()
+      expect(Object.values(childEnv)).not.toContain(KEY)
+      expect(Object.values(childEnv)).not.toContain(OTHER_KEY)
     }
+  })
+
+  it('the pinned helper yields the identity file’s key, whatever the environment or .env say', async () => {
+    fs.writeFileSync(path.join(codexHome, '.env'), `AGENTCHAT_API_KEY=${OTHER_KEY}\n`)
+    const r = runner('answer', { AGENTCHAT_API_KEY: OTHER_KEY })
+    fs.mkdirSync(workdir, { recursive: true })
+    expect(await r.preflight()).toEqual({ ok: true }) // writes the helper when it is missing
+    const command = JSON.parse(HELPER_PIN()[1]!.slice('mcp_servers.agentchat.http_headers_helper='.length)) as string
+    const out = spawnSync(command, { shell: true, encoding: 'utf-8', env: { ...process.env, AGENTCHAT_API_KEY: OTHER_KEY } })
+    expect(out.status, out.stderr).toBe(0)
+    expect(JSON.parse(out.stdout)).toEqual({ Authorization: `Bearer ${KEY}` })
   })
 })
 
@@ -324,14 +347,14 @@ describe('the hosted server’s URL is pinned on every run', () => {
     for (const profile of ['answer', 'work', 'full'] as const) {
       const r = new CodexRunner({ codexHome, identityHome, workdir, profile, pinMcpUrl: url, env: env() })
       const args = r.args()
-      expect(args.slice(-3)).toEqual(['-c', `mcp_servers.agentchat.url=${JSON.stringify(url)}`, '-'])
-      expect(args.filter((a) => a.startsWith('mcp_servers.agentchat.'))).toEqual([`mcp_servers.agentchat.url=${JSON.stringify(url)}`])
+      expect(args.slice(-5)).toEqual(['-c', `mcp_servers.agentchat.url=${JSON.stringify(url)}`, ...HELPER_PIN(), '-'])
+      expect(args.filter((a) => a.startsWith('mcp_servers.agentchat.'))).toEqual([`mcp_servers.agentchat.url=${JSON.stringify(url)}`, HELPER_PIN()[1]])
     }
     // The answer run's listing carries the pin too (Codex lists what the run would load), and so does the run.
     fs.mkdirSync(workdir, { recursive: true })
     await new CodexRunner({ codexHome, identityHome, workdir, profile: 'answer', pinMcpUrl: url, env: env() }).start({ kind: 'wake', prompt: 'P', runId: 'p1', budgetMs: 10_000 })
     expect(readListings(fake)[0]!.argv).toContain(`mcp_servers.agentchat.url=${JSON.stringify(url)}`)
-    expect(readRuns(fake)[0]!.argv.slice(-3)).toEqual(['-c', `mcp_servers.agentchat.url=${JSON.stringify(url)}`, '-'])
+    expect(readRuns(fake)[0]!.argv.slice(-5)).toEqual(['-c', `mcp_servers.agentchat.url=${JSON.stringify(url)}`, ...HELPER_PIN(), '-'])
   })
 })
 

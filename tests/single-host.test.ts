@@ -9,6 +9,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, INTEGRATION_ENV_LEGACY_REMOVAL, MANUAL, manualVersion, PEER_RUN_WARNING } from '@agentchatme/agent-core'
 import { VERSION } from '../src/version.js'
+import { headersHelperCommand } from '../src/headers-helper.js'
 import { installFakeCodex, type FakeCodex } from './helpers/fake-codex.js'
 
 const exec = promisify(execFile)
@@ -84,11 +85,18 @@ const skill = (): string => path.join(codexDir(), 'skills', 'agentchat', 'SKILL.
 /** The client identity the hosted tools read, on every request (`http_headers`, codex-rs since before 0.154.0). */
 const CLIENT_HEADERS_LINE = `http_headers = { "X-AgentChat-Client" = "codex", "X-AgentChat-Client-Version" = "${VERSION}" }`
 
-const EXPECTED_BLOCK = [
+/** The helper command the block names: this Node and the identity home's helper, quoted for the shell Codex runs it in. */
+const HELPER_PATH = (): string => path.join(sandbox, '.codex', 'agentchat', 'bin', 'mcp-headers.mjs')
+const HELPER_COMMAND = (): string => headersHelperCommand(HELPER_PATH())!
+const tomlString = (value: string): string => `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+
+/** The block this release writes. A function: the helper line names the sandbox's paths. */
+const EXPECTED_BLOCK_OF = (): string => [
   '# agentchat:start',
   '[mcp_servers.agentchat]',
   'url = "http://127.0.0.1:9/mcp"',
-  'bearer_token_env_var = "AGENTCHAT_API_KEY"',
+  '# The key: Codex runs this on each connection and sends the Authorization header it prints, read from agentchat/credentials. No key in this file or in .env.',
+  `http_headers_helper = ${tomlString(HELPER_COMMAND())}`,
   '# Names this runtime to the hosted tools: no wake-webhook tools for an agent the listener wakes.',
   CLIENT_HEADERS_LINE,
   'startup_timeout_sec = 30',
@@ -160,15 +168,14 @@ describe('install places the four texts', () => {
     expect(snapshot(claudeDir())).toEqual(snapshot(claudeDir())) // sanity: helper is deterministic
   })
 
-  it('with an identity: the key in .env (0600), the MCP block in config.toml, the identity line, the skill', async () => {
+  it('with an identity: the MCP block with the headers helper in config.toml (no key in it, none in .env), the identity line, the skill', async () => {
     giveCodexAnIdentity()
     fs.writeFileSync(configToml(), '[model]\nname = "o4"\n')
     const out = await run([])
     expect(out.code, out.stdout + out.stderr).toBe(0)
 
-    expect(fs.readFileSync(dotEnv(), 'utf-8')).toBe(`AGENTCHAT_API_KEY=${KEY}\n`)
-    if (process.platform !== 'win32') expect(fs.statSync(dotEnv()).mode & 0o777).toBe(0o600)
-    expect(fs.readFileSync(configToml(), 'utf-8')).toBe(`[model]\nname = "o4"\n\n${EXPECTED_BLOCK}\n`)
+    expect(fs.existsSync(dotEnv())).toBe(false)
+    expect(fs.readFileSync(configToml(), 'utf-8')).toBe(`[model]\nname = "o4"\n\n${EXPECTED_BLOCK_OF()}\n`)
     expect(fs.readFileSync(configToml(), 'utf-8')).not.toContain(KEY) // the key is never in config.toml
     const md = fs.readFileSync(agentsMd(), 'utf-8')
     expect(md).toBe(`${BLOCK('codex-agent')}\n`)
@@ -181,7 +188,7 @@ describe('install places the four texts', () => {
     expect(again.code, again.stdout).toBe(0)
     expect(fs.readFileSync(configToml(), 'utf-8').split('# agentchat:start')).toHaveLength(2)
     expect(fs.readFileSync(agentsMd(), 'utf-8').split('<!-- agentchat:start -->')).toHaveLength(2)
-    expect(fs.readFileSync(dotEnv(), 'utf-8')).toBe(`AGENTCHAT_API_KEY=${KEY}\n`)
+    expect(fs.existsSync(dotEnv())).toBe(false)
   })
 
   it('keeps the user’s own .env lines and config.toml content byte for byte', async () => {
@@ -189,7 +196,7 @@ describe('install places the four texts', () => {
     fs.writeFileSync(dotEnv(), 'OPENAI_API_KEY=user-secret\nOTHER=1\n')
     fs.writeFileSync(configToml(), '# my config\nmodel = "o4"\n\n[mcp_servers.other]\ncommand = "other"\n')
     expect((await run([])).code).toBe(0)
-    expect(fs.readFileSync(dotEnv(), 'utf-8')).toBe(`OPENAI_API_KEY=user-secret\nOTHER=1\nAGENTCHAT_API_KEY=${KEY}\n`)
+    expect(fs.readFileSync(dotEnv(), 'utf-8')).toBe('OPENAI_API_KEY=user-secret\nOTHER=1\n')
     expect(fs.readFileSync(configToml(), 'utf-8').startsWith('# my config\nmodel = "o4"\n\n[mcp_servers.other]\ncommand = "other"\n')).toBe(true)
   })
 
@@ -202,8 +209,9 @@ describe('install places the four texts', () => {
     expect(out.code, out.stdout + out.stderr).toBe(0)
     expect(fs.existsSync(path.join(relocated, 'skills', 'agentchat', 'SKILL.md'))).toBe(true)
     expect(fs.readFileSync(path.join(relocated, 'AGENTS.md'), 'utf-8')).toContain('@moved-agent')
-    expect(fs.existsSync(path.join(relocated, '.env'))).toBe(true)
-    expect(fs.existsSync(path.join(relocated, 'config.toml'))).toBe(true)
+    expect(fs.existsSync(path.join(relocated, '.env'))).toBe(false)
+    expect(fs.existsSync(path.join(relocated, 'agentchat', 'bin', 'mcp-headers.mjs'))).toBe(true)
+    expect(fs.readFileSync(path.join(relocated, 'config.toml'), 'utf-8')).toContain(path.join(relocated, 'agentchat', 'bin', 'mcp-headers.mjs').replace(/\\/g, '\\\\'))
     expect(fs.existsSync(skill())).toBe(false)
   })
 
@@ -379,7 +387,7 @@ describe('upgrading from the hook-based release before the listener', () => {
     const out = await run([])
     expect(out.code, out.stdout + out.stderr).toBe(0)
     expect(out.stdout).toContain('lifecycle hooks removed')
-    expect(fs.readFileSync(configToml(), 'utf-8')).toBe(`[model]\nname = "o4"\n\n${EXPECTED_BLOCK}\n`)
+    expect(fs.readFileSync(configToml(), 'utf-8')).toBe(`[model]\nname = "o4"\n\n${EXPECTED_BLOCK_OF()}\n`)
     const hooks = JSON.parse(fs.readFileSync(path.join(codexDir(), 'hooks.json'), 'utf-8')) as { hooks: Record<string, unknown> }
     expect(hooks).toEqual({ hooks: { Stop: [{ hooks: [{ type: 'command', command: '/usr/local/bin/user-hook' }] }] } })
     expect(fs.existsSync(stable)).toBe(false)
@@ -403,8 +411,8 @@ describe('there is no way to address another agent', () => {
     expect(out.code, out.stdout + out.stderr).toBe(0)
     expect(snapshot(claudeDir())).toEqual(before)
     expect(fs.existsSync(creds())).toBe(false)
-    expect(fs.existsSync(dotEnv())).toBe(false) // the only line was ours
-    expect(fs.readFileSync(configToml(), 'utf-8')).toContain('bearer_token_env_var') // the block is a template, it stays
+    expect(fs.existsSync(dotEnv())).toBe(false)
+    expect(fs.readFileSync(configToml(), 'utf-8')).toContain('http_headers_helper') // the block holds no key, it stays
     const md = fs.readFileSync(agentsMd(), 'utf-8')
     expect(md).not.toContain('@codex-agent')
     expect(md).toContain('no account yet')
@@ -467,15 +475,16 @@ describe('doctor', () => {
     expect(snapshot(claudeDir())).toEqual(before)
   })
 
-  it('re-places the key when the credentials rotated', { timeout: 30_000 }, async () => {
+  it('a rotated key needs nothing re-placed: the helper reads the new one', { timeout: 30_000 }, async () => {
     giveCodexAnIdentity()
     await run([])
+    const before = fs.readFileSync(configToml(), 'utf-8')
     const rotated = 'ac_live_' + 'r'.repeat(40)
     fs.writeFileSync(creds(), JSON.stringify({ api_key: rotated, handle: 'codex-agent', api_base: 'http://127.0.0.1:9' }))
     const seen = await run(['doctor'])
-    expect(seen.stdout).toContain('differs from this agent')
-    await run(['doctor', '--fix'])
-    expect(fs.readFileSync(dotEnv(), 'utf-8')).toBe(`AGENTCHAT_API_KEY=${rotated}\n`)
+    expect(seen.stdout).toContain('PASS hosted-mcp:')
+    expect(fs.readFileSync(configToml(), 'utf-8')).toBe(before)
+    expect(fs.existsSync(dotEnv())).toBe(false)
   })
 })
 
@@ -487,10 +496,11 @@ describe('--help', () => {
     expect(out).not.toContain('this release')
   })
 
-  it('names every switch the service captures, and says the key is not one of them', async () => {
+  it('names every switch the service captures, and says an exported key never replaces the stored one', async () => {
     const out = (await run(['--help'])).stdout
     for (const name of ['AGENTCHAT_RUN_PROFILE', INTEGRATION_ENV, 'AGENTCHAT_RUN_BUDGET_MS', 'AGENTCHAT_RUN_CWD', 'AGENTCHAT_API_BASE']) expect(out).toContain(name)
-    expect(out).toMatch(/AGENTCHAT_API_KEY\s+override the stored key \(never captured into the service\)/)
+    expect(out.replace(/\s+/g, ' ')).toContain('An exported AGENTCHAT_API_KEY never replaces it')
+    expect(out).not.toMatch(/override the stored key|AGENTCHAT_API_KEY=|--api-key <ac_/)
   })
 
   it('says what each profile lets a peer-started run do, and what an answer run still has in its context', async () => {
@@ -735,32 +745,32 @@ describe('the published bundle is self-contained', () => {
 
 describe('the hosted tools are told this agent is on Codex', () => {
   /** What 0.4.0 wrote: the same fenced block without the client headers. */
-  const BLOCK_040 = EXPECTED_BLOCK.split('\n')
-    .filter((line) => !line.startsWith('http_headers') && !line.startsWith('# Names this runtime'))
+  const BLOCK_040 = (): string => EXPECTED_BLOCK_OF().split('\n')
+    .filter((line) => !line.startsWith('http_headers') && !line.startsWith('# Names this runtime') && !line.startsWith('# The key'))
     .join('\n')
 
   it('the header names this package’s own version', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8')) as { version: string }
     expect(VERSION).toBe(pkg.version)
-    expect(EXPECTED_BLOCK).toContain(`"X-AgentChat-Client" = "codex", "X-AgentChat-Client-Version" = "${pkg.version}"`)
+    expect(EXPECTED_BLOCK_OF()).toContain(`"X-AgentChat-Client" = "codex", "X-AgentChat-Client-Version" = "${pkg.version}"`)
   })
 
   it('a block an earlier release wrote (no client headers) reads as older and install rewrites it, keeping the rest of config.toml', { timeout: 30_000 }, async () => {
     giveCodexAnIdentity()
-    fs.writeFileSync(configToml(), `# my config\nmodel = "o4"\n\n${BLOCK_040}\n\n[mcp_servers.other]\ncommand = "other"\n`)
+    fs.writeFileSync(configToml(), `# my config\nmodel = "o4"\n\n${BLOCK_040()}\n\n[mcp_servers.other]\ncommand = "other"\n`)
     expect((await run(['status'])).stdout).toContain(`✗ mcp: the agentchat block in ${configToml()} is from an older release`)
     expect((await run([])).code).toBe(0)
-    expect(fs.readFileSync(configToml(), 'utf-8')).toBe(`# my config\nmodel = "o4"\n\n[mcp_servers.other]\ncommand = "other"\n\n${EXPECTED_BLOCK}\n`)
-    expect((await run(['status'])).stdout).toContain(`✓ mcp: [mcp_servers.agentchat] → hosted tools, bearer token from AGENTCHAT_API_KEY, named as Codex ${VERSION}`)
+    expect(fs.readFileSync(configToml(), 'utf-8')).toBe(`# my config\nmodel = "o4"\n\n[mcp_servers.other]\ncommand = "other"\n\n${EXPECTED_BLOCK_OF()}\n`)
+    expect((await run(['status'])).stdout).toContain(`✓ mcp: [mcp_servers.agentchat] → hosted tools, the key from ${HELPER_PATH()} (it reads ${creds()}), named as Codex ${VERSION}`)
   })
 
   it('doctor --fix brings an older block current too', { timeout: 30_000 }, async () => {
     giveCodexAnIdentity()
     expect((await run([])).code).toBe(0)
-    fs.writeFileSync(configToml(), `${BLOCK_040}\n`)
-    expect((await run(['doctor'])).stdout).toMatch(/FAIL hosted-mcp: the agentchat block in .* is from an older release — run `npx -y @agentchatme\/codex doctor --fix`/)
+    fs.writeFileSync(configToml(), `${BLOCK_040()}\n`)
+    expect((await run(['doctor'])).stdout).toMatch(/FAIL hosted-mcp: the agentchat block in .* is from an older release, or its headers helper .* — run `npx -y @agentchatme\/codex doctor --fix`/)
     await run(['doctor', '--fix'])
-    expect(fs.readFileSync(configToml(), 'utf-8')).toBe(`${EXPECTED_BLOCK}\n`)
+    expect(fs.readFileSync(configToml(), 'utf-8')).toBe(`${EXPECTED_BLOCK_OF()}\n`)
   })
 
   it('a hand-written [mcp_servers.agentchat] is left alone; status and doctor say when it does not send the header, and stay quiet when it does', { timeout: 30_000 }, async () => {

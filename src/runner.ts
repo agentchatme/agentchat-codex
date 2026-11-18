@@ -1,6 +1,7 @@
-import { manualPointer, resolveIdentity, runProfileWarning, type RunProfile } from '@agentchatme/agent-core'
+import { manualPointer, runProfileWarning, type RunProfile, type RunPreflight, type RunPreflightOptions } from '@agentchatme/agent-core'
 import { CodexRunner as PresetCodexRunner, type CodexRunnerOptions } from '@agentchatme/agent-core/presets'
-import { API_KEY_ENV } from './host.js'
+import { API_KEY_ENV, MCP_SERVER_NAME } from './host.js'
+import { headersHelperCommand, headersHelperPathFor, writeHeadersHelper } from './headers-helper.js'
 
 // ─── One headless run of Codex, as THIS integration's agent ─────────────────
 //
@@ -10,13 +11,18 @@ import { API_KEY_ENV } from './host.js'
 // `agentchat listen --preset codex` listener so the two can never drift. What
 // is this integration's own is which agent the runs act as: the hosted tools
 // reach the run through `[mcp_servers.agentchat]` in `$CODEX_HOME/config.toml`,
-// whose bearer token Codex reads from `AGENTCHAT_API_KEY` — loaded from
-// `$CODEX_HOME/.env` at startup and, for the daemon's runs, also set on the
-// child environment from this integration's identity file, read per run.
+// whose Authorization header Codex gets from the headers helper
+// (headers-helper.ts), which reads this integration's identity file on each
+// connection. No key is in a run's environment: not set by the daemon, and
+// any `AGENTCHAT_API_KEY` the daemon inherited is taken out. (Releases up to
+// 0.5.2 set it there from the identity file — and Codex's own `.env` load
+// overwrote it, so a foreign key in `.env` made the runs another agent.)
 //
-// The daemon builds the runner per identity and pins the hosted server's URL
-// on every run (`pinMcpUrl`, `-c mcp_servers.agentchat.url=…`): another config
-// layer cannot point the agentchat server, and the key, elsewhere.
+// The daemon builds the runner per identity and pins, on every run, the
+// hosted server's URL (`pinMcpUrl`, `-c mcp_servers.agentchat.url=…`) and the
+// helper (`-c mcp_servers.agentchat.http_headers_helper=…`, the identity
+// home's): another config layer cannot point the agentchat server, or the
+// key, elsewhere.
 //
 // An `answer` run (the default, started by any peer's message) has the
 // AgentChat tools and nothing else: no shell, no web, no local-file tool, and
@@ -28,15 +34,45 @@ import { API_KEY_ENV } from './host.js'
 export { codexIsLoggedIn, inspectCodexRuntime } from '@agentchatme/agent-core/presets'
 
 export interface IntegrationRunnerOptions extends Omit<CodexRunnerOptions, 'apiKey' | 'keyEnv' | 'mcp'> {
-  /** The identity home; the key is read from here for each run's environment. */
+  /** The identity home: the headers helper reads the key from its `credentials` when a run connects. */
   readonly identityHome: string
 }
 
-/** The preset's runner, keyed from this integration's identity home under the name config.toml names. */
+/** The preset's runner, authenticated by this integration's identity home through the headers helper; no key in the run's environment. */
 export class CodexRunner extends PresetCodexRunner {
+  private readonly identityHome: string
+  private readonly helper: string | null
+
   constructor(options: IntegrationRunnerOptions) {
     const { identityHome, ...rest } = options
-    super({ ...rest, apiKey: () => resolveIdentity(identityHome)?.apiKey ?? null, keyEnv: API_KEY_ENV })
+    super({ ...rest, apiKey: () => null, keyEnv: API_KEY_ENV })
+    this.identityHome = identityHome
+    this.helper = headersHelperCommand(headersHelperPathFor(identityHome))
+  }
+
+  /** The preset's argv with the identity home's helper pinned before the prompt (which stays last). */
+  override args(): string[] {
+    const args = super.args()
+    if (this.helper === null) return args
+    return [...args.slice(0, -1), '-c', `mcp_servers.${MCP_SERVER_NAME}.http_headers_helper=${JSON.stringify(this.helper)}`, args[args.length - 1]!]
+  }
+
+  /** The preset's environment without any `AGENTCHAT_API_KEY`: the key reaches a run through the helper only. */
+  override env(): NodeJS.ProcessEnv {
+    const env = super.env()
+    delete env[API_KEY_ENV]
+    return env
+  }
+
+  /** The helper is there (written when missing or not this release's) before the preset's own gate. */
+  override async preflight(options: RunPreflightOptions = {}): Promise<RunPreflight> {
+    if (this.helper === null) return { ok: false, detail: `the path of Node (${process.execPath}) or of ${headersHelperPathFor(this.identityHome)} holds a character a shell command cannot carry quoted` }
+    try {
+      writeHeadersHelper(this.identityHome)
+    } catch (err) {
+      return { ok: false, detail: `could not write the headers helper ${headersHelperPathFor(this.identityHome)}: ${String(err)}` }
+    }
+    return super.preflight(options)
   }
 }
 

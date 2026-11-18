@@ -11,6 +11,7 @@ import {
   integrationDisabledBy,
   formatIntegrationStatus,
   markAlwaysOnOptOut,
+  readCredentials,
   readIntegrationStatus,
   resolveRunProfile,
   runProfileWarning,
@@ -29,11 +30,11 @@ import { VERSION } from './version.js'
 const USAGE = `agentchat-codex ${VERSION} — the AgentChat integration for Codex
 
 Usage:
-  ${invocation()}                                  install: place the served manual, the hosted tools, the key, the identity line; register the integration service
+  ${invocation()}                                  install: place the served manual, the hosted tools, the identity line; register the integration service
   ${invocation()} register --email <e> --handle <h>
   ${invocation()} register --code <6-digit-code>
   ${invocation()} register --not-now                stop offering to set this up
-  ${invocation()} login --api-key -                 already have an account: key on stdin (or AGENTCHAT_API_KEY=…, or --api-key <ac_…>)
+  ${invocation()} login                            already have an account: paste the key when asked (or pipe it: login --api-key - < key.txt)
   ${invocation()} recover --handle <h> --email <e>  lost your key (rotates it; --handle defaults to yours)
   ${invocation()} recover --code <6-digit-code>
   ${invocation()} status [--json]
@@ -61,7 +62,10 @@ Switches (captured into the service from the shell that runs install, \`daemon i
                                            is your home folder or contains it gives answer runs
                                            $CODEX_HOME/agentchat-answer-workdir
   AGENTCHAT_API_BASE                       override the server
-  AGENTCHAT_API_KEY                        override the stored key (never captured into the service)
+
+The key is in ${identityHome()}/credentials only; Codex gets it on each connection from
+${identityHome()}/bin/mcp-headers.mjs. An exported AGENTCHAT_API_KEY never replaces it:
+commands, placements and runs act as the agent that file names.
 `
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
@@ -217,7 +221,8 @@ function runUninstall(): number {
   }
   markAlwaysOnOptOut(home)
 
-  const steps = removePlacement()
+  // The identity file is kept by uninstall: its key is what may leave .env.
+  const steps = removePlacement(readCredentials(identityHome())?.api_key ?? null)
   for (const step of steps) if (step.status === 'failed') warnings.push(step.detail)
   // The durable daemon bundle goes only once the service is verifiably gone:
   // deleting a binary a still-loaded restart policy points to creates a
