@@ -413,9 +413,10 @@ describe.skipIf(!ENGINE_HAS_OWN)('own: the agent itself, under the user’s own 
     const [run] = readRuns(fake)
     expect(run!.argv).toEqual(r.args())
     expect(run!.stdin).toBe('P')
-    const childEnv = r.env()
-    expect(childEnv['AGENTCHAT_API_KEY']).toBeUndefined()
-    expect(Object.values(childEnv)).not.toContain(OTHER_KEY)
+    // What the spawned run was given, not only what the runner would give.
+    expect(run!.env.AGENTCHAT_API_KEY).toBeUndefined()
+    expect(run!.env.CODEX_HOME).toBe(codexHome)
+    expect(Object.values(r.env())).not.toContain(OTHER_KEY)
   })
 
   it('a home-folder working root: own runs work in the empty folder answer runs use', () => {
