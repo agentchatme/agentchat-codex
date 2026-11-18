@@ -3,9 +3,10 @@ import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { manualPointer, PEER_RUN_WARNING } from '@agentchatme/agent-core'
+import * as engine from '@agentchatme/agent-core'
+import { manualPointer, PEER_RUN_WARNING, RUN_PROFILES, type RunProfile } from '@agentchatme/agent-core'
 import { codexRunArgs } from '@agentchatme/agent-core/presets'
-import { CodexRunner, profileNote, runPointer } from '../src/runner.js'
+import { CodexRunner, OWN_PROFILE_LINE, OWN_PROFILE_WARNING, guardsHomeWorkdir, profileNote, profileSummary, runPointer } from '../src/runner.js'
 import { headersHelperCommand, headersHelperPathFor } from '../src/headers-helper.js'
 import { installFakeCodex, readListings, readRuns, type FakeCodex } from './helpers/fake-codex.js'
 
@@ -22,6 +23,14 @@ let workdir: string
 let codexHome: string
 let identityHome: string
 const KEY = 'ac_live_' + 'k'.repeat(40)
+
+/**
+ * Whether the engine this build runs on has the `own` profile. The pin moves to
+ * that engine at the release step; until then the tests that need it skip,
+ * and pass with the new engine linked in.
+ */
+const ENGINE_HAS_OWN = (RUN_PROFILES as readonly string[]).includes('own')
+const OWN = 'own' as RunProfile
 const OTHER_KEY = 'ac_live_' + 'o'.repeat(40)
 /** `-c mcp_servers.agentchat.http_headers_helper=<the identity home's helper>`, as every run of this integration carries it. */
 const HELPER_PIN = (): string[] => ['-c', `mcp_servers.agentchat.http_headers_helper=${JSON.stringify(headersHelperCommand(headersHelperPathFor(identityHome))!)}`]
@@ -365,9 +374,51 @@ describe('the prompt’s last line and the profile words', () => {
     for (const profile of ['work', 'full'] as const) expect(runPointer(profile, skill)).toBe(manualPointer(`at ${skill}`))
   })
 
-  it('work and full are named with the engine’s warning; answer with nothing', () => {
-    expect(profileNote('answer')).toBe('')
-    expect(profileNote('work')).toBe(` — ${PEER_RUN_WARNING}`)
-    expect(profileNote('full')).toBe(` — ${PEER_RUN_WARNING}`)
+  it('an own run’s prompt gets the pointer (Codex’s sandboxes never restrict reads)', () => {
+    const skill = path.join(codexHome, 'skills', 'agentchat', 'SKILL.md')
+    expect(runPointer(OWN, skill)).toBe(manualPointer(`at ${skill}`))
+  })
+
+  it('every profile is said plainly: own in one line with the honest sentence, work and full with the engine’s warning', () => {
+    expect(OWN_PROFILE_LINE).toBe('reply runs use your own Codex permission settings, with anything that would ask refused')
+    expect(profileSummary('own')).toBe(`${OWN_PROFILE_LINE}; runs started by peers' messages act with those permissions`)
+    expect(profileNote('own')).toBe(` — ${profileSummary('own')}`)
+    expect(profileSummary('answer')).toBe('the AgentChat tools only — no shell, no web, no file tool, no other MCP server')
+    for (const profile of ['work', 'full']) expect(profileNote(profile)).toContain(PEER_RUN_WARNING)
+    expect(guardsHomeWorkdir('own')).toBe(true)
+    expect(guardsHomeWorkdir('answer')).toBe(true)
+    expect(guardsHomeWorkdir('full')).toBe(false)
+  })
+
+  it.skipIf(!ENGINE_HAS_OWN)('the own words are the engine’s', () => {
+    const words = engine as unknown as { ownProfileLine: (label: string) => string; OWN_RUN_WARNING: string }
+    expect(OWN_PROFILE_LINE).toBe(words.ownProfileLine('Codex'))
+    expect(OWN_PROFILE_WARNING).toBe(words.OWN_RUN_WARNING)
+  })
+})
+
+describe.skipIf(!ENGINE_HAS_OWN)('own: the agent itself, under the user’s own config.toml', () => {
+  it('the default when AGENTCHAT_RUN_PROFILE is unset; an unknown value is answer', () => {
+    expect(engine.resolveRunProfile({})).toBe(OWN)
+    expect(engine.resolveRunProfile({ AGENTCHAT_RUN_PROFILE: 'yolo' })).toBe('answer')
+  })
+
+  it('a run: no sandbox, approval, feature or permission-profile flag; only the URL and the helper pinned; no listing; no key in its environment', async () => {
+    const url = 'https://api.agentchat.test/mcp'
+    const r = new CodexRunner({ codexHome, identityHome, workdir, profile: OWN, pinMcpUrl: url, env: env({ AGENTCHAT_API_KEY: OTHER_KEY }) })
+    expect(r.args()).toEqual(['exec', '--json', '--skip-git-repo-check', '--ephemeral', '-C', workdir, '-c', `mcp_servers.agentchat.url=${JSON.stringify(url)}`, ...HELPER_PIN(), '-'])
+    expect(await r.preflight()).toEqual({ ok: true })
+    expect((await r.start({ kind: 'wake', prompt: 'P', runId: 'own-1', budgetMs: 10_000 })).state).toBe('ok')
+    expect(readListings(fake)).toEqual([])
+    const [run] = readRuns(fake)
+    expect(run!.argv).toEqual(r.args())
+    expect(run!.stdin).toBe('P')
+    const childEnv = r.env()
+    expect(childEnv['AGENTCHAT_API_KEY']).toBeUndefined()
+    expect(Object.values(childEnv)).not.toContain(OTHER_KEY)
+  })
+
+  it('a home-folder working root: own runs work in the empty folder answer runs use', () => {
+    expect(runner(OWN as 'answer', {}, fakeHome).workdir()).toBe(path.join(codexHome, 'agentchat-answer-workdir'))
   })
 })

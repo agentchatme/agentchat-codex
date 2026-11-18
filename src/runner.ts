@@ -1,4 +1,4 @@
-import { manualPointer, runProfileWarning, type RunProfile, type RunPreflight, type RunPreflightOptions } from '@agentchatme/agent-core'
+import { manualPointer, PEER_RUN_WARNING, type RunProfile, type RunPreflight, type RunPreflightOptions } from '@agentchatme/agent-core'
 import { CodexRunner as PresetCodexRunner, type CodexRunnerOptions } from '@agentchatme/agent-core/presets'
 import { API_KEY_ENV, MCP_SERVER_NAME } from './host.js'
 import { headersHelperCommand, headersHelperPathFor, writeHeadersHelper } from './headers-helper.js'
@@ -24,12 +24,20 @@ import { headersHelperCommand, headersHelperPathFor, writeHeadersHelper } from '
 // home's): another config layer cannot point the agentchat server, or the
 // key, elsewhere.
 //
-// An `answer` run (the default, started by any peer's message) has the
-// AgentChat tools and nothing else: no shell, no web, no local-file tool, and
-// every other MCP server Codex would load switched off for that run — the
-// preset asks `codex mcp list --json` which ones (cached until a config file
-// changes). The key is then out of the model's reach (no shell to print the
-// environment, nothing to read `.env` with); in `work` and `full` it is not.
+// An `own` run (the default: the agent itself) runs under the user's own
+// config.toml — sandbox, approvals, tools, MCP servers, instructions — with
+// nothing of ours but the run's shape and the two pins above; `codex exec`
+// answers every approval with "never" itself. Its environment carries no key,
+// but Codex's sandboxes never restrict reads, so its shell can read
+// `credentials` in the identity home, as in `work` and `full`.
+//
+// An `answer` run (the lock, an explicit opt-in) has the AgentChat tools and
+// nothing else: no shell, no web, no local-file tool, and every other MCP
+// server Codex would load switched off for that run — the preset asks
+// `codex mcp list --json` which ones (cached until a config file changes).
+// The key is then out of the model's reach (no shell to print the
+// environment, nothing to read `.env` with); in `own`, `work` and `full` it is
+// not.
 
 export { codexIsLoggedIn, inspectCodexRuntime } from '@agentchatme/agent-core/presets'
 
@@ -80,15 +88,46 @@ export class CodexRunner extends PresetCodexRunner {
  * The line a run prompt ends with: where the manual is (the `agentchat`
  * skill). An `answer` run cannot open it — it has no file tool and no web — so
  * its prompt ends with the served instruction alone: the hosted tools and the
- * served texts are everything it has. `work` and `full` runs read files and
- * the web, and get the pointer.
+ * served texts are everything it has. `own`, `work` and `full` runs read files
+ * (Codex's sandboxes never restrict reads) and get the pointer.
  */
 export function runPointer(profile: RunProfile, skill: string): string {
   return profile === 'answer' ? '' : manualPointer(`at ${skill}`)
 }
 
-/** ` — <the engine's warning>` after a `work` or `full` profile name (`runProfileWarning`); nothing after `answer`. */
+/**
+ * What `own` does, in one line: the engine's `ownProfileLine('Codex')`
+ * (tests/runner.test.ts holds the two equal once the engine has it).
+ */
+export const OWN_PROFILE_LINE = 'reply runs use your own Codex permission settings, with anything that would ask refused'
+
+/** The honest sentence after it: the engine's `OWN_RUN_WARNING` (held equal the same way). */
+export const OWN_PROFILE_WARNING = "runs started by peers' messages act with those permissions"
+
+/**
+ * What a run of `profile` may do, in Codex's terms, for install,
+ * `daemon install`, `doctor` and the help. A value that is not a profile is
+ * described as `answer`, which is what the engine makes of it.
+ */
+export function profileSummary(profile: string): string {
+  switch (profile) {
+    case 'own':
+      return `${OWN_PROFILE_LINE}; ${OWN_PROFILE_WARNING}`
+    case 'work':
+      return `the workspace-write sandbox, never asking; ${PEER_RUN_WARNING}`
+    case 'full':
+      return `Codex's bypass mode (no sandbox, no approvals); ${PEER_RUN_WARNING}`
+    default:
+      return 'the AgentChat tools only — no shell, no web, no file tool, no other MCP server'
+  }
+}
+
+/** ` — <what the profile does>` after a profile name (`profileSummary`). */
 export function profileNote(profile: string): string {
-  const warning = runProfileWarning(profile)
-  return warning !== null ? ` — ${warning}` : ''
+  return ` — ${profileSummary(profile)}`
+}
+
+/** Whether a run of `profile` never has the home folder or above it as its working root (the engine's fallback folder instead): `own` and `answer`. */
+export function guardsHomeWorkdir(profile: string): boolean {
+  return profile === 'own' || profile === 'answer'
 }

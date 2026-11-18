@@ -4,7 +4,10 @@ import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, INTEGRATION_ENV_LEGACY_REMOVAL } from '@agentchatme/agent-core'
+import { DEFAULT_RUN_PROFILE, INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, INTEGRATION_ENV_LEGACY_REMOVAL, RUN_PROFILES } from '@agentchatme/agent-core'
+
+/** Whether the engine this build runs on has the `own` profile (the pin moves to it at the release step). */
+const ENGINE_HAS_OWN = (RUN_PROFILES as readonly string[]).includes('own')
 import { installFakeCodex, type FakeCodex } from './helpers/fake-codex.js'
 
 // ─── The service runs something that can actually serve ─────────────────────
@@ -134,7 +137,7 @@ describe('the shipped daemon’s answer runner', () => {
     const home = path.join(sandbox, '.codex', 'agentchat')
     signIn(home, 'codex-answer-ok')
     const lists = path.join(sandbox, 'lists.jsonl')
-    const { out, alive } = await runFor(DAEMON, ['--home', home], 6000, { FAKE_CODEX_MCP_LIST_RECORD: lists })
+    const { out, alive } = await runFor(DAEMON, ['--home', home], 6000, { FAKE_CODEX_MCP_LIST_RECORD: lists, AGENTCHAT_RUN_PROFILE: 'answer' })
     expect(alive, out).toBe(true)
     expect(out).toMatch(/integration up as @codex-answer-ok via codex \(codex [^)]+\), profile answer/)
     expect(fs.readFileSync(lists, 'utf-8')).toContain('"--disable","shell_tool"')
@@ -145,11 +148,25 @@ describe('the shipped daemon’s answer runner', () => {
   it('a server no -c key can switch off stops answer runs: the daemon holds no socket and says why', async () => {
     const home = path.join(sandbox, '.codex', 'agentchat')
     signIn(home, 'codex-answer-refused')
-    const { out, alive } = await runFor(DAEMON, ['--home', home], 6000, { FAKE_CODEX_MCP_LIST: JSON.stringify([{ name: 'agentchat', enabled: true }, { name: 'my.notes', enabled: true }]) })
+    const { out, alive } = await runFor(DAEMON, ['--home', home], 6000, { FAKE_CODEX_MCP_LIST: JSON.stringify([{ name: 'agentchat', enabled: true }, { name: 'my.notes', enabled: true }]), AGENTCHAT_RUN_PROFILE: 'answer' })
     expect(alive, out).toBe(true)
     expect(out).toContain('not connecting yet: runtime (codex) not ready: could not list Codex\'s MCP servers')
     expect(out).toContain('"my.notes" cannot be switched off')
     expect(out).not.toMatch(/integration up as/)
+  }, 30_000)
+
+  it.skipIf(!ENGINE_HAS_OWN)('with no profile set, the shipped daemon serves own: no MCP listing, and its status names the profile and the runtime', async () => {
+    const home = path.join(sandbox, '.codex', 'agentchat')
+    signIn(home, 'codex-own-ok')
+    const lists = path.join(sandbox, 'own-lists.jsonl')
+    // A server no -c key can address stops answer runs only: an own run keeps the user's servers.
+    const { out, alive } = await runFor(DAEMON, ['--home', home], 6000, { FAKE_CODEX_MCP_LIST_RECORD: lists, FAKE_CODEX_MCP_LIST: JSON.stringify([{ name: 'agentchat', enabled: true }, { name: 'my.notes', enabled: true }]) })
+    expect(alive, out).toBe(true)
+    expect(out).toMatch(/integration up as @codex-own-ok via codex \(codex [^)]+\), profile own/)
+    expect(fs.existsSync(lists)).toBe(false)
+    const status = JSON.parse(fs.readFileSync(path.join(home, 'integration.status.json'), 'utf-8')) as { profile: string; runtime_label?: string }
+    expect(status.profile).toBe('own')
+    expect(status.runtime_label).toBe('Codex')
   }, 30_000)
 })
 
@@ -252,6 +269,19 @@ describe.skipIf(!serviceOs)('the service label follows CODEX_HOME', () => {
     const definition = fs.readFileSync(definitionPath('agentchatd-codex'), 'utf-8')
     // launchd: <key>NAME</key><string>off</string>; systemd: Environment="NAME=off".
     for (const name of [INTEGRATION_ENV, INTEGRATION_ENV_LEGACY]) expect(definition).toMatch(new RegExp(`${name}(</key><string>|=)off`))
+  })
+
+  // The upgrade path: a profile is captured only when it was set, so an install
+  // that set none runs whatever the engine's default is when its daemon starts
+  // (`own` from the engine that added it; `answer` before).
+  it('an install that sets no profile captures none: its daemon runs the engine’s default', async () => {
+    const installed = await run(CLI, ['daemon', 'install'])
+    expect(installed.code, installed.out).toBe(0)
+    expect(fs.readFileSync(definitionPath('agentchatd-codex'), 'utf-8')).not.toContain('AGENTCHAT_RUN_PROFILE')
+    expect(installed.out).toContain(`with profile ${DEFAULT_RUN_PROFILE} while this machine is up — `)
+    const set = await run(CLI, ['daemon', 'install'], { AGENTCHAT_RUN_PROFILE: 'answer' })
+    expect(set.code, set.out).toBe(0)
+    expect(fs.readFileSync(definitionPath('agentchatd-codex'), 'utf-8')).toMatch(/AGENTCHAT_RUN_PROFILE(<\/key>\s*<string>|=)answer/)
   })
 
   // Pinned on purpose, so that changing it is a decision and not an accident:

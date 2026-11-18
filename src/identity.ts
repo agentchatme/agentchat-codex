@@ -5,6 +5,8 @@ import {
   alwaysOnState,
   createIdentityCommands,
   DEFAULT_API_BASE,
+  DEFAULT_RUN_PROFILE,
+  PEER_RUN_WARNING,
   fetchServedTexts,
   hostedMcpUrl,
   integrationDisabledBy,
@@ -18,7 +20,6 @@ import {
   renderAnchorBlock,
   renderDeclinedBlock,
   resolveRunProfile,
-  runProfileWarning,
   workdirExposesHome,
   writeAnchor,
   type DoctorCheck,
@@ -33,7 +34,7 @@ import {
 import { codexAnswerFallbackWorkdir, deniedAncestorOf } from '@agentchatme/agent-core/presets'
 import { CLIENT, identityHome, anchorFile, codexHome, invocation, LABEL, resolveRunWorkdir, runWorkdirFor } from './host.js'
 import { checkPlacement, placeAll, placementMark, skillPresent, unplaceIdentity, type PlacementIdentity } from './placement.js'
-import { CodexRunner, codexIsLoggedIn, inspectCodexRuntime, profileNote } from './runner.js'
+import { CodexRunner, codexIsLoggedIn, guardsHomeWorkdir, inspectCodexRuntime, OWN_PROFILE_LINE, OWN_PROFILE_WARNING, profileNote } from './runner.js'
 import { listenerServiceCurrent, ensureListenerService } from './service.js'
 import { VERSION } from './version.js'
 import { homeIdentity } from './home-identity.js'
@@ -210,8 +211,8 @@ function daemonRunner(settings: ReturnType<typeof runSettings> = runSettings()):
 
 /**
  * The run's working root. One that is the home folder or contains it is no
- * answer run's (those work in an empty folder of their own), and `work`/`full`
- * runs there would see the whole home. One that contains `$CODEX_HOME` holds
+ * own or answer run's (those work in an empty folder of their own), and
+ * `work`/`full` runs there would see the whole home. One that contains `$CODEX_HOME` holds
  * the key (`.env`, `agentchat/credentials`), which an answer run's
  * `apply_patch` could then read.
  */
@@ -225,7 +226,7 @@ export function workdirCheck(): DoctorCheck {
       name: 'run-workdir',
       verdict: 'WARN',
       detail: `${workdir}${note} is your home folder or contains it — ${
-        settings.profile === 'answer' ? `answer runs work in ${codexAnswerFallbackWorkdir(codexHome())} instead` : "a run started by a peer's message there can see everything under it"
+        guardsHomeWorkdir(settings.profile) ? `${settings.profile} runs work in ${codexAnswerFallbackWorkdir(codexHome())} instead` : "a run started by a peer's message there can see everything under it"
       }; ${fix}`,
     }
   }
@@ -237,18 +238,33 @@ export function workdirCheck(): DoctorCheck {
 }
 
 /**
- * What a run started by a peer's message may do. `answer`: the AgentChat tools
- * and nothing else. `work` and `full` are the operator's opt-in, said with the
- * engine's own warning (`runProfileWarning`).
+ * What a run started by a peer's message may do, in plain words. `own` (the
+ * default): the user's own Codex permission settings, with anything that would
+ * ask refused, the sentence that says peers' runs act with them, and the one
+ * thing Codex's sandboxes cannot keep from a run's shell (the key file).
+ * `answer`: the AgentChat tools and nothing else. `work` and `full` are the
+ * operator's opt-in, said with the engine's own warning (`PEER_RUN_WARNING`).
  */
 export function profileCheck(): DoctorCheck {
   const settings = runSettings()
-  const warning = runProfileWarning(settings.profile)
-  if (warning !== null) return { name: 'run-profile', verdict: 'WARN', detail: `${settings.profile}: ${warning}${settingsNote(settings)} (AGENTCHAT_RUN_PROFILE; answer is the default)` }
+  const note = settingsNote(settings)
+  if (settings.profile === 'work' || settings.profile === 'full') {
+    return { name: 'run-profile', verdict: 'WARN', detail: `${settings.profile}: ${PEER_RUN_WARNING}${note} (AGENTCHAT_RUN_PROFILE; ${DEFAULT_RUN_PROFILE} is the default)` }
+  }
+  const verdict = settings.differs !== null ? 'WARN' : 'PASS'
+  const workdir = daemonRunner(settings).workdir()
+  // A string compare: the pinned engine names the profiles.
+  if ((settings.profile as string) === 'own') {
+    return {
+      name: 'run-profile',
+      verdict,
+      detail: `own: ${OWN_PROFILE_LINE}; ${OWN_PROFILE_WARNING} (runs work in ${workdir}; Codex's sandboxes never restrict reads, so a run's shell can read ${path.join(identityHome(), 'credentials')})${note}`,
+    }
+  }
   return {
     name: 'run-profile',
-    verdict: settings.differs !== null ? 'WARN' : 'PASS',
-    detail: `answer: the AgentChat tools only — no shell, no web, no file tool (apply_patch reads ${daemonRunner(settings).workdir()} alone and writes nothing), no other MCP server, no project AGENTS.md; ${anchorFile()} is still in its context${settingsNote(settings)}`,
+    verdict,
+    detail: `answer: the AgentChat tools only — no shell, no web, no file tool (apply_patch reads ${workdir} alone and writes nothing), no other MCP server, no project AGENTS.md; ${anchorFile()} is still in its context${note}`,
   }
 }
 

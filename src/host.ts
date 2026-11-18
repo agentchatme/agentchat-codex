@@ -72,9 +72,9 @@ export function runWorkdirFor(home: string): string {
  * The working root (`-C`) the daemon's runs use for an identity home:
  * `AGENTCHAT_RUN_CWD` (captured into the service at `daemon install`), else the
  * default. A hand-run daemon's `--workdir` flag outranks both; the installed
- * unit never passes one. An `answer` run whose working root is the home folder
- * or contains it works in `$CODEX_HOME/agentchat-answer-workdir` instead (the
- * engine's `codexAnswerFallbackWorkdir`).
+ * unit never passes one. An `own` or `answer` run whose working root is the
+ * home folder or contains it works in `$CODEX_HOME/agentchat-answer-workdir`
+ * instead (the engine's `codexAnswerFallbackWorkdir`).
  */
 export function resolveRunWorkdir(home: string, env: NodeJS.ProcessEnv = process.env): string {
   const cwd = env['AGENTCHAT_RUN_CWD']?.trim()
@@ -135,10 +135,13 @@ export function hostCopy(): { invoke: string; label: string } {
  * Env the service must see. A launchd/systemd service does NOT inherit the
  * login shell, so the listener's switches are captured at install time:
  * `AGENTCHAT_RUN_PROFILE=work npx -y @agentchatme/codex daemon install`.
- * `answer` (the default) gives a run the AgentChat tools and nothing else (no
+ * Only a profile that was set is captured: an install that set none gets the
+ * engine's default whenever its daemon starts. `own` (the default): reply runs
+ * use the user's own Codex permission settings, with anything that would ask
+ * refused; `answer` gives a run the AgentChat tools and nothing else (no
  * shell, no web, no file tool, no other MCP server); with `work` or `full`,
  * runs started by peers' messages can read and change this machine
- * (`PEER_RUN_WARNING`), the key in `.env` and in their environment included.
+ * (`PEER_RUN_WARNING`).
  *
  * `INTEGRATION_ENV_LEGACY` is the switch's previous name, captured too
  * (compatibility only): the daemon still reads it until 2027-02-01 (agent
