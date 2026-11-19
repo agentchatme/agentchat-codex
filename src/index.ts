@@ -14,14 +14,13 @@ import {
   readCredentials,
   readIntegrationStatus,
   resolveRunProfile,
-  runProfileWarning,
   PEER_RUN_WARNING,
   serviceStatus,
 } from '@agentchatme/agent-core'
 import { codexHome, identityHome, invocation, serviceLabel, LABEL } from './host.js'
 import { formatPlacement, placeAll, removePlacement } from './placement.js'
 import { currentServedPlacement, runRegister, runLogin, runRecover, runStatus, runLogout, runDoctor, runNotNow } from './identity.js'
-import { inspectCodexRuntime, profileNote } from './runner.js'
+import { inspectCodexRuntime, OWN_PROFILE_LINE, OWN_PROFILE_WARNING, profileNote, profileSummary } from './runner.js'
 import { ensureListenerService, removeListenerService, stableDaemonPath } from './service.js'
 import { VERSION } from './version.js'
 
@@ -49,17 +48,21 @@ two of you can DM each other — and it has its own front door:
   Claude Code:  npx -y @agentchatme/claude-code
 
 Switches (captured into the service from the shell that runs install, \`daemon install\` or \`doctor --fix\`):
-  AGENTCHAT_RUN_PROFILE=answer|work|full   what a headless run may do. answer (default): the AgentChat tools only — no
-                                           shell, no web, no file tool, no other MCP server (each run lists them with
-                                           \`codex mcp list\`; a server with a "." in its name stops answer runs);
-                                           $CODEX_HOME/AGENTS.md is still in its context, so keep private notes out of it.
+  AGENTCHAT_RUN_PROFILE=own|answer|work|full
+                                           what a headless run may do. own (default): ${OWN_PROFILE_LINE};
+                                           ${OWN_PROFILE_WARNING}. Codex's sandboxes never restrict reads, so an own
+                                           run's shell can read the key in ${identityHome()}/credentials.
+                                           answer: the AgentChat tools only — no shell, no web, no file tool, no other MCP
+                                           server (each run lists them with \`codex mcp list\`; a server with a "." in its
+                                           name stops answer runs); $CODEX_HOME/AGENTS.md is still in its context, so keep
+                                           private notes out of it. An unknown value is answer.
                                            work and full: ${PEER_RUN_WARNING}
   ${INTEGRATION_ENV}=off                hold no socket, start no run; tools + manual stay
                                            (${INTEGRATION_ENV_LEGACY}=off, the previous name, is still read; its removal is scheduled for ${INTEGRATION_ENV_LEGACY_REMOVAL};
                                            ${INTEGRATION_ENV} wins when both are set)
   AGENTCHAT_RUN_BUDGET_MS                  kill a run past this (default 600000)
   AGENTCHAT_RUN_CWD                        the run's working root (default $CODEX_HOME/agentchat/daemon-workdir); one that
-                                           is your home folder or contains it gives answer runs
+                                           is your home folder or contains it gives own and answer runs
                                            $CODEX_HOME/agentchat-answer-workdir
   AGENTCHAT_API_BASE                       override the server
 
@@ -260,7 +263,7 @@ function runDaemonCmd(sub: string | undefined): number {
         return 1
       }
       console.log(
-        `Integration daemon is ON for ${LABEL} (${serviceLabel()}): a peer's message starts one headless Codex run with profile ${resolveRunProfile()} while this machine is up.${runProfileWarning(resolveRunProfile()) !== null ? ` With ${resolveRunProfile()}, ${runProfileWarning(resolveRunProfile())}.` : ''}${integrationDisabled() ? ` ${integrationDisabledBy()}=off was captured: it holds no socket until re-installed without it.` : ''}`,
+        `Integration daemon is ON for ${LABEL} (${serviceLabel()}): a peer's message starts one headless Codex run with profile ${resolveRunProfile()} while this machine is up — ${profileSummary(resolveRunProfile())}.${integrationDisabled() ? ` ${integrationDisabledBy()}=off was captured: it holds no socket until re-installed without it.` : ''}`,
       )
       return 0
     }

@@ -7,7 +7,10 @@ import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, INTEGRATION_ENV_LEGACY_REMOVAL, MANUAL, manualVersion, PEER_RUN_WARNING } from '@agentchatme/agent-core'
+import { DEFAULT_RUN_PROFILE, INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, INTEGRATION_ENV_LEGACY_REMOVAL, MANUAL, manualVersion, PEER_RUN_WARNING, RUN_PROFILES } from '@agentchatme/agent-core'
+
+/** Whether the engine this build runs on has the `own` profile (the pin moves to it at the release step). */
+const ENGINE_HAS_OWN = (RUN_PROFILES as readonly string[]).includes('own')
 import { VERSION } from '../src/version.js'
 import { headersHelperCommand } from '../src/headers-helper.js'
 import { installFakeCodex, type FakeCodex } from './helpers/fake-codex.js'
@@ -505,7 +508,12 @@ describe('--help', () => {
 
   it('says what each profile lets a peer-started run do, and what an answer run still has in its context', async () => {
     const out = (await run(['--help'])).stdout.replace(/\s+/g, ' ')
-    expect(out).toContain('answer (default): the AgentChat tools only — no shell, no web, no file tool, no other MCP server')
+    expect(out).toContain('AGENTCHAT_RUN_PROFILE=own|answer|work|full')
+    expect(out).toContain("own (default): reply runs use your own Codex permission settings, with anything that would ask refused; runs started by peers' messages act with those permissions.")
+    expect(out).toContain("Codex's sandboxes never restrict reads, so an own run's shell can read the key in")
+    expect(out).toContain('answer: the AgentChat tools only — no shell, no web, no file tool, no other MCP server')
+    expect(out).toContain('An unknown value is answer.')
+    expect(out).toContain('gives own and answer runs $CODEX_HOME/agentchat-answer-workdir')
     expect(out).toContain('a server with a "." in its name stops answer runs')
     expect(out).toContain('$CODEX_HOME/AGENTS.md is still in its context, so keep private notes out of it')
     expect(out).toContain(`work and full: ${PEER_RUN_WARNING}`)
@@ -540,10 +548,10 @@ describe('doctor: what a peer-started run may do, and whether one can start', ()
       ...extra,
     })
 
-  it('answer (the default): the profile in plain words, and the runner’s preflight (with its MCP listing) passes', { timeout: 30_000 }, async () => {
+  it('answer (the lock, set): the profile in plain words, and the runner’s preflight (with its MCP listing) passes', { timeout: 30_000 }, async () => {
     giveCodexAnIdentity()
     await run([])
-    const out = await run(['doctor'])
+    const out = await run(['doctor'], { AGENTCHAT_RUN_PROFILE: 'answer' })
     expect(out.stdout).toContain(`PASS run-profile: answer: the AgentChat tools only — no shell, no web, no file tool (apply_patch reads ${path.join(home(), 'daemon-workdir')} alone and writes nothing), no other MCP server, no project AGENTS.md; ${agentsMd()} is still in its context`)
     expect(out.stdout).toContain('PASS run-preflight: the daemon can start a run')
     expect(out.stdout).toContain(`PASS run-workdir: ${path.join(home(), 'daemon-workdir')}`)
@@ -553,7 +561,7 @@ describe('doctor: what a peer-started run may do, and whether one can start', ()
     giveCodexAnIdentity()
     await run([])
     const listed = JSON.stringify([{ name: 'agentchat', enabled: true }, { name: 'team.notes', enabled: true }])
-    const out = await run(['doctor'], { FAKE_CODEX_MCP_LIST: listed })
+    const out = await run(['doctor'], { FAKE_CODEX_MCP_LIST: listed, AGENTCHAT_RUN_PROFILE: 'answer' })
     expect(out.code).toBe(1)
     expect(out.stdout).toContain('FAIL run-preflight: no run starts: could not list Codex\'s MCP servers')
     expect(out.stdout).toContain('the MCP server "team.notes" cannot be switched off for one run')
@@ -565,8 +573,22 @@ describe('doctor: what a peer-started run may do, and whether one can start', ()
   it('a working root that is the home folder: answer runs work in their own folder, and doctor says so', { timeout: 30_000 }, async () => {
     giveCodexAnIdentity()
     await run([])
-    const out = await run(['doctor'], { AGENTCHAT_RUN_CWD: sandbox })
+    const out = await run(['doctor'], { AGENTCHAT_RUN_CWD: sandbox, AGENTCHAT_RUN_PROFILE: 'answer' })
     expect(out.stdout).toContain(`WARN run-workdir: ${sandbox} is your home folder or contains it — answer runs work in ${path.join(codexDir(), 'agentchat-answer-workdir')} instead`)
+  })
+
+  it.skipIf(!ENGINE_HAS_OWN)('own (the default): the profile in one line with the honest sentence and the key-file limit; no MCP listing stops it; a home-folder root is guarded', { timeout: 30_000 }, async () => {
+    giveCodexAnIdentity()
+    await run([])
+    // A server no -c key can switch off stops answer runs, not own runs: they keep the user's servers.
+    const listed = JSON.stringify([{ name: 'agentchat', enabled: true }, { name: 'team.notes', enabled: true }])
+    const out = await run(['doctor'], { FAKE_CODEX_MCP_LIST: listed })
+    expect(out.stdout).toContain(`PASS run-profile: own: reply runs use your own Codex permission settings, with anything that would ask refused; runs started by peers' messages act with those permissions (runs work in ${path.join(home(), 'daemon-workdir')}; Codex's sandboxes never restrict reads, so a run's shell can read ${path.join(home(), 'credentials')})`)
+    expect(out.stdout).toContain('PASS run-preflight: the daemon can start a run')
+    const homeRoot = await run(['doctor'], { AGENTCHAT_RUN_CWD: sandbox })
+    expect(homeRoot.stdout).toContain(`WARN run-workdir: ${sandbox} is your home folder or contains it — own runs work in ${path.join(codexDir(), 'agentchat-answer-workdir')} instead`)
+    const install = await run([])
+    expect(install.stdout).toContain("profile own — reply runs use your own Codex permission settings, with anything that would ask refused; runs started by peers' messages act with those permissions")
   })
 
   it('runs failing for a runtime reason, and another listener serving the agent, are said in doctor and status', { timeout: 30_000 }, async () => {
@@ -629,7 +651,7 @@ describe('doctor: what a peer-started run may do, and whether one can start', ()
     await run([])
     fs.writeFileSync(path.join(home(), 'integration.status.json'), STATUS({ profile: 'full', workdir: path.join(sandbox, 'project'), runs_failed: 0, runs_ok: 3 }))
     const out = await run(['doctor'])
-    expect(out.stdout).toContain(`WARN run-profile: full: ${PEER_RUN_WARNING} (the daemon's, from its status; install, \`daemon install\` or \`doctor --fix\` from this shell would set profile answer and working root ${path.join(home(), 'daemon-workdir')})`)
+    expect(out.stdout).toContain(`WARN run-profile: full: ${PEER_RUN_WARNING} (the daemon's, from its status; install, \`daemon install\` or \`doctor --fix\` from this shell would set profile ${DEFAULT_RUN_PROFILE} and working root ${path.join(home(), 'daemon-workdir')})`)
   })
 
   it('a working root that contains $CODEX_HOME (the key in .env) is said: a run there could read it', { timeout: 30_000 }, async () => {

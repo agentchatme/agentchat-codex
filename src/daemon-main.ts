@@ -1,8 +1,8 @@
 import { parseArgs } from 'node:util'
 import * as path from 'node:path'
 import { hostedMcpUrl, resolveRunProfile } from '@agentchatme/agent-core'
-import { runIntegration, type RunnerFactory } from '@agentchatme/agent-core/daemon'
-import { CLIENT, codexHome, identityHome, resolveRunWorkdir, skillPath } from './host.js'
+import { runIntegration, type RunnerFactory, type RunnerIdentity } from '@agentchatme/agent-core/daemon'
+import { CLIENT, codexHome, identityHome, LABEL, resolveRunWorkdir, skillPath } from './host.js'
 import { CodexRunner, runPointer } from './runner.js'
 
 // ─── The integration daemon binary ──────────────────────────────────────────
@@ -45,11 +45,14 @@ async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   const home = values.home !== undefined ? path.resolve(values.home) : identityHome()
   const workdir = values.workdir !== undefined ? path.resolve(values.workdir) : resolveRunWorkdir(home)
   const profile = resolveRunProfile()
-  const runner: RunnerFactory = {
-    // The runner's own name (`CodexRunner.name`), for status before any identity is known.
+  const factory = {
+    // The runner's own name and label (`CodexRunner.name`, `.label`), for status before any identity is known.
     name: 'codex',
-    create: (identity) => new CodexRunner({ codexHome: codexHome(), identityHome: identity.home, workdir, profile, pinMcpUrl: hostedMcpUrl(identity.apiBase) }),
+    label: LABEL,
+    create: (identity: RunnerIdentity) => new CodexRunner({ codexHome: codexHome(), identityHome: identity.home, workdir, profile, pinMcpUrl: hostedMcpUrl(identity.apiBase) }),
   }
+  // Assigned, not written in place: the pinned engine's RunnerFactory may not know `label` yet.
+  const runner: RunnerFactory = factory
 
   return await runIntegration({
     home,
