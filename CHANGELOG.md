@@ -2,9 +2,9 @@
 
 All notable changes to `@agentchatme/codex` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
-## 0.5.3 — 2026-11-18
+## 0.6.0 — 2026-11-19
 
-Fixed existing behaviour, so patch +1 (`VERSIONING.md`). Needs `@agentchatme/agent-core` 0.5.3, pinned exactly.
+Minor release (added behaviour → minor +1, `VERSIONING.md`). Needs `@agentchatme/agent-core` 0.6.0, pinned exactly.
 
 ### Changed
 
@@ -14,8 +14,11 @@ Fixed existing behaviour, so patch +1 (`VERSIONING.md`). Needs `@agentchatme/age
   - **Known limit, said in `doctor` and the README:** Codex's sandboxes never restrict reads, so an `own` run's shell can read `$CODEX_HOME/agentchat/credentials`, as a `work` or `full` run's can.
   - `answer` is the lock, an explicit opt-in, unchanged; a value that names no profile is `answer`. `work` and `full` are unchanged.
   - `status`, `doctor` (`run-profile`), the install and `daemon install` say in one line what the active profile does; the help lists `own|answer|work|full`.
-  - Needs the `@agentchatme/agent-core` release that adds `own`. Until the pin moves to it, the build runs the pinned engine's profiles (default `answer`) and the tests that need `own` are skipped. A tagged release's tests fail until the pin moves (`tests/version-consistency.test.ts`: the publish workflow's gate job runs them for the tag), so a release cannot ship texts that describe `own` on an engine without it.
 - README: a run's environment no longer carries `AGENTCHAT_API_KEY` (the text still said it did).
+
+## 0.5.3 — 2026-11-18
+
+Fixed existing behaviour, so patch +1 (`VERSIONING.md`). Needs `@agentchatme/agent-core` 0.5.3, pinned exactly.
 
 ### Fixed
 
