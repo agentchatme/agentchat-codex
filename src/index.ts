@@ -4,6 +4,7 @@ import {
   alwaysOnState,
   clearAlwaysOnWanted,
   clearAlwaysOnOptOut,
+  clearIntegrationStatus,
   INTEGRATION_ENV,
   INTEGRATION_ENV_LEGACY,
   INTEGRATION_ENV_LEGACY_REMOVAL,
@@ -236,6 +237,10 @@ function runUninstall(): number {
     } catch {
       /* a locked file stays inert */
     }
+    // The daemon's own files in the identity home go with it (a daemon still
+    // running would only write them again): its status file, the one an older
+    // daemon wrote, and the could-not-process ledger (the engine's list).
+    clearIntegrationStatus(home)
   }
 
   console.log(

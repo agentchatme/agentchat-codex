@@ -11,6 +11,7 @@ import { DEFAULT_RUN_PROFILE, INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, INTEGRATI
 
 /** Whether the engine this build runs on has the `own` profile (the pin moves to it at the release step). */
 const ENGINE_HAS_OWN = (RUN_PROFILES as readonly string[]).includes('own')
+import * as engine from '@agentchatme/agent-core'
 import { VERSION } from '../src/version.js'
 import { headersHelperCommand } from '../src/headers-helper.js'
 import { installFakeCodex, type FakeCodex } from './helpers/fake-codex.js'
@@ -420,6 +421,22 @@ describe('there is no way to address another agent', () => {
     expect(md).not.toContain('@codex-agent')
     expect(md).toContain('no account yet')
     expect(fs.existsSync(skill())).toBe(true)
+  })
+
+  it('uninstall leaves no daemon status behind: the status file, the one an older daemon wrote, and the could-not-process ledger', async () => {
+    giveCodexAnIdentity()
+    expect((await run([])).code).toBe(0)
+    // What a daemon leaves in the identity home while it runs (ids and counters only).
+    const files = [engine.INTEGRATION_STATUS_FILE, engine.LEGACY_STATUS_FILE, 'could-not-process.json']
+    for (const name of files) fs.writeFileSync(path.join(home(), name), '{}\n', { mode: 0o600 })
+    const out = await run(['uninstall'])
+    expect(out.code, out.stdout + out.stderr).toBe(0)
+    expect(fs.existsSync(path.join(home(), engine.INTEGRATION_STATUS_FILE))).toBe(false)
+    expect(fs.existsSync(path.join(home(), engine.LEGACY_STATUS_FILE))).toBe(false)
+    // The ledger is in the engine's list from the release that has it (agent-core#27); the pin moves to it at the release step.
+    const engineKnowsLedger = typeof (engine as unknown as { couldNotProcessPath?: unknown }).couldNotProcessPath === 'function'
+    if (engineKnowsLedger) expect(fs.existsSync(path.join(home(), 'could-not-process.json'))).toBe(false)
+    expect(fs.existsSync(creds())).toBe(true)
   })
 
   it('uninstall removes the integration and preserves the identity file', async () => {

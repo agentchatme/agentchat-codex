@@ -445,7 +445,10 @@ describe.skipIf(!ENGINE_HAS_RUNTIME_CHECK)('the runtime check (could not process
     expect(run.stdin).toBe((presets as unknown as { RUNTIME_CHECK_PROMPT: string }).RUNTIME_CHECK_PROMPT)
     expect(run.stdin).toBe('Reply with the single word OK.')
     const dir = path.join(codexHome, 'agentchat-runtime-check')
-    expect(run.argv).toEqual(['exec', '--json', '--skip-git-repo-check', '--ephemeral', '-C', dir, '--sandbox', 'read-only', '-c', `mcp_servers.agentchat.url=${JSON.stringify(url)}`, '-c', 'mcp_servers.agentchat.enabled=false', '-'])
+    // The engine's argv for it, exactly: read-only, ephemeral, the AgentChat server pinned and switched off.
+    expect(run.argv).toEqual((presets as unknown as { codexRuntimeCheckArgs: (dir: string, url?: string) => string[] }).codexRuntimeCheckArgs(dir, url))
+    expect(run.argv.slice(0, 8)).toEqual(['exec', '--json', '--skip-git-repo-check', '--ephemeral', '-C', dir, '--sandbox', 'read-only'])
+    expect(run.argv.slice(-5)).toEqual(['-c', `mcp_servers.agentchat.url=${JSON.stringify(url)}`, '-c', 'mcp_servers.agentchat.enabled=false', '-'])
     // The run's headers helper is not pinned for it: the AgentChat server is off, and the check needs no key.
     expect(run.argv.join(' ')).not.toContain('http_headers_helper')
     expect(fs.realpathSync(run.cwd)).toBe(fs.realpathSync(dir))
