@@ -27,7 +27,7 @@ beforeEach(() => {
   sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-daemon-'))
   fake = installFakeCodex(sandbox)
 })
-afterEach(() => fs.rmSync(sandbox, { recursive: true, force: true }))
+afterEach(() => fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
 
 const baseEnv = (): Record<string, string> => ({
   PATH: `${fake.binDir}${path.delimiter}${process.env['PATH'] ?? ''}`,
@@ -56,7 +56,12 @@ function runFor(script: string, args: string[], ms: number, env: Record<string, 
     let exited = false
     child.stdout.on('data', (d) => (out += d))
     child.stderr.on('data', (d) => (out += d))
-    child.on('exit', () => (exited = true))
+    const gone = new Promise<void>((done) => {
+      child.on('exit', () => {
+        exited = true
+        done()
+      })
+    })
     setTimeout(() => {
       const alive = !exited
       try {
@@ -64,7 +69,13 @@ function runFor(script: string, args: string[], ms: number, env: Record<string, 
       } catch {
         /* already gone */
       }
-      setTimeout(() => resolve({ out, alive }), 150)
+      // Resolve once the daemon has really exited: it writes its status files
+      // into the home on the way out, and the sandbox is removed right after.
+      const force = setTimeout(() => child.kill('SIGKILL'), 5_000)
+      void gone.then(() => {
+        clearTimeout(force)
+        resolve({ out, alive })
+      })
     }, ms)
   })
 }
