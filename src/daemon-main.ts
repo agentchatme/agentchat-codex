@@ -12,9 +12,11 @@ import { CodexRunner, runPointer } from './runner.js'
 //
 // The host is a compile-time fact here exactly as it is in the CLI: this file
 // imports Codex's runner and Codex's home, and cannot name another coding
-// agent. The run prompt is the server's wake instruction, fetched for the
-// `codex` runtime (`GET /v1/texts?runtime=codex`, tool names already spelled
-// `mcp__agentchat__agentchat_inbox` for `[mcp_servers.agentchat]`;
+// agent. A run's prompt is the server's text for that run — the prompt for
+// one conversation (one run per conversation that owes a reply), the invite
+// prompt, or from an older server the wake instruction for the whole tray —
+// fetched for the `codex` runtime (`GET /v1/texts?runtime=codex`, tool names
+// already spelled `mcp__agentchat__agentchat_inbox` for `[mcp_servers.agentchat]`;
 // codex-rs/core/src/tools/handlers/mcp.rs: `mcp__` prefix, `__` delimiter),
 // then one pointer to the skill — the one line only this package knows — in
 // the profiles whose runs can open it (`runPointer`: an answer run has no file

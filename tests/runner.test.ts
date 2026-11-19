@@ -5,6 +5,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import * as engine from '@agentchatme/agent-core'
 import { manualPointer, PEER_RUN_WARNING, RUN_PROFILES, type RunProfile } from '@agentchatme/agent-core'
+import * as presets from '@agentchatme/agent-core/presets'
 import { codexRunArgs } from '@agentchatme/agent-core/presets'
 import { CodexRunner, OWN_PROFILE_LINE, OWN_PROFILE_WARNING, guardsHomeWorkdir, profileNote, profileSummary, runPointer } from '../src/runner.js'
 import { headersHelperCommand, headersHelperPathFor } from '../src/headers-helper.js'
@@ -421,5 +422,40 @@ describe.skipIf(!ENGINE_HAS_OWN)('own: the agent itself, under the user’s own 
 
   it('a home-folder working root: own runs work in the empty folder answer runs use', () => {
     expect(runner(OWN as 'answer', {}, fakeHome).workdir()).toBe(path.join(codexHome, 'agentchat-answer-workdir'))
+  })
+})
+
+/**
+ * The runtime check (could not process) comes from the engine's Codex preset:
+ * the runner here inherits it, with this integration's environment. Until the
+ * pin moves to that engine the test skips, and passes with it linked in.
+ */
+type RuntimeCheck = (options?: { signal?: AbortSignal }) => Promise<{ ok: boolean; detail?: string }>
+const ENGINE_HAS_RUNTIME_CHECK = typeof (CodexRunner.prototype as unknown as { checkRuntime?: unknown }).checkRuntime === 'function'
+
+describe.skipIf(!ENGINE_HAS_RUNTIME_CHECK)('the runtime check (could not process): the engine’s, as this integration’s runner inherits it', () => {
+  it('one `codex exec` with the fixed prompt: read-only, ephemeral, the AgentChat server switched off, no headers helper and no key, in an empty folder of its own; ok when the model answers, not ok when it fails', async () => {
+    const url = 'https://api.agentchat.test/mcp'
+    const r = new CodexRunner({ codexHome, identityHome, workdir, profile: OWN, pinMcpUrl: url, env: env({ AGENTCHAT_API_KEY: OTHER_KEY }) })
+    const check = (r as unknown as { checkRuntime: RuntimeCheck }).checkRuntime.bind(r)
+    expect(await check()).toEqual({ ok: true })
+    const runs = readRuns(fake)
+    expect(runs).toHaveLength(1)
+    const run = runs[0]!
+    expect(run.stdin).toBe((presets as unknown as { RUNTIME_CHECK_PROMPT: string }).RUNTIME_CHECK_PROMPT)
+    expect(run.stdin).toBe('Reply with the single word OK.')
+    const dir = path.join(codexHome, 'agentchat-runtime-check')
+    expect(run.argv).toEqual(['exec', '--json', '--skip-git-repo-check', '--ephemeral', '-C', dir, '--sandbox', 'read-only', '-c', `mcp_servers.agentchat.url=${JSON.stringify(url)}`, '-c', 'mcp_servers.agentchat.enabled=false', '-'])
+    // The run's headers helper is not pinned for it: the AgentChat server is off, and the check needs no key.
+    expect(run.argv.join(' ')).not.toContain('http_headers_helper')
+    expect(fs.realpathSync(run.cwd)).toBe(fs.realpathSync(dir))
+    expect(run.env.AGENTCHAT_API_KEY).toBeUndefined()
+    expect(run.env.CODEX_HOME).toBe(codexHome)
+    expect(JSON.stringify(run)).not.toContain(KEY)
+    expect(JSON.stringify(run)).not.toContain(OTHER_KEY)
+
+    // A provider error (some output, exit 1) is not ok.
+    const failing = new CodexRunner({ codexHome, identityHome, workdir, profile: OWN, pinMcpUrl: url, env: env({ FAKE_CODEX_RUN: 'fail' }) })
+    expect(await (failing as unknown as { checkRuntime: RuntimeCheck }).checkRuntime()).toMatchObject({ ok: false, detail: expect.stringContaining('codex runtime check failed') })
   })
 })
