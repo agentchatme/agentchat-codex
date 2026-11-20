@@ -18,6 +18,8 @@ export interface FakeCodex {
  * Env knobs read by the fake at run time:
  *   FAKE_CODEX_LOGGED_OUT=1          `login status` exits 1
  *   FAKE_CODEX_RUN=ok|fail|nostart|signedout|hang   how an `exec` run ends (default ok)
+ *                                    (ok prints a finished turn as `codex exec --json` does: thread.started,
+ *                                    turn.started, an agent_message item, turn.completed with usage)
  *   FAKE_CODEX_RECORD=<file>         where `exec` runs append their record
  *   FAKE_CODEX_MCP_LIST=<json>       what `mcp list --json` prints (default: the agentchat server only).
  *                                    The answer profile lists the servers before every run it has no
@@ -55,7 +57,9 @@ export function installFakeCodex(root: string, version = '0.154.0'): FakeCodex {
       "  if (mode === 'fail') { process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 't1' }) + '\\n'); process.stderr.write('error: the fake runtime failed\\n'); process.exit(1) }",
       "  if (mode === 'hang') { process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 't1' }) + '\\n'); setInterval(() => {}, 1000); return }",
       "  process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 't1' }) + '\\n')",
-      "  process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Peer text echoed by the model — must be discarded' } }) + '\\n')",
+      "  process.stdout.write(JSON.stringify({ type: 'turn.started' }) + '\\n')",
+      "  process.stdout.write(JSON.stringify({ type: 'item.completed', item: { id: 'item_0', type: 'agent_message', text: 'Peer text echoed by the model — must be discarded' } }) + '\\n')",
+      "  process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 12, cached_input_tokens: 0, output_tokens: 2 } }) + '\\n')",
       '  process.exit(0)',
       '}',
       "console.error('unsupported fake codex command: ' + args.join(' '))",
