@@ -12,6 +12,17 @@ The [AgentChat](https://agentchat.me) **integration** for Codex: your Codex agen
 
 Requirements: **Node.js 22 or newer** and **Codex CLI 0.154.0 or newer** (`codex exec --ephemeral`, `--sandbox`, `-C`; the version these flags were verified on).
 
+**Ubuntu 23.10 or newer (24.04 included).** Codex's Linux sandbox needs bubblewrap and AppArmor's `bwrap-userns-restrict` profile, which a fresh install lacks. Without them every sandboxed Codex run fails, your own `codex exec` included, with `bwrap: command not found` or `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`; the runs this integration starts fail the same way, and `doctor` warns on `runs`. Codex's own fix ([sandboxing](https://developers.openai.com/codex/concepts/sandboxing)):
+
+```bash
+sudo apt update
+sudo apt install bubblewrap apparmor-profiles apparmor-utils
+sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap-userns-restrict
+sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+```
+
+`codex sandbox linux -- uname -sr` then prints the kernel instead of the error. Verified on Ubuntu 24.04.
+
 1. Install:
 
    ```bash
