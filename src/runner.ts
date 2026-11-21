@@ -1,4 +1,4 @@
-import { manualPointer, PEER_RUN_WARNING, type RunProfile, type RunPreflight, type RunPreflightOptions } from '@agentchatme/agent-core'
+import { manualPointer, PEER_RUN_WARNING, type ManualPointer, type RunProfile, type RunPreflight, type RunPreflightOptions } from '@agentchatme/agent-core'
 import { CodexRunner as PresetCodexRunner, type CodexRunnerOptions } from '@agentchatme/agent-core/presets'
 import { API_KEY_ENV, MCP_SERVER_NAME } from './host.js'
 import { headersHelperCommand, headersHelperPathFor, writeHeadersHelper } from './headers-helper.js'
@@ -89,10 +89,12 @@ export class CodexRunner extends PresetCodexRunner {
  * skill). An `answer` run cannot open it — it has no file tool and no web — so
  * its prompt ends with the served instruction alone: the hosted tools and the
  * served texts are everything it has. `own`, `work` and `full` runs read files
- * (Codex's sandboxes never restrict reads) and get the pointer.
+ * (Codex's sandboxes never restrict reads) and get the pointer. The manual's
+ * address in it is the one the served texts announce: the daemon calls this
+ * with it for each run.
  */
-export function runPointer(profile: RunProfile, skill: string): string {
-  return profile === 'answer' ? '' : manualPointer(`at ${skill}`)
+export function runPointer(profile: RunProfile, skill: string): ManualPointer {
+  return (manualUrl: string) => (profile === 'answer' ? '' : manualPointer(`at ${skill}`, manualUrl))
 }
 
 /**
