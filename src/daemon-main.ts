@@ -2,7 +2,7 @@ import { parseArgs } from 'node:util'
 import * as path from 'node:path'
 import { hostedMcpUrl, resolveRunProfile } from '@agentchatme/agent-core'
 import { runIntegration, type RunnerFactory, type RunnerIdentity } from '@agentchatme/agent-core/daemon'
-import { CLIENT, codexHome, identityHome, LABEL, resolveRunWorkdir, skillPath } from './host.js'
+import { anchorFile, anchorNotLoaded, CLIENT, codexHome, identityHome, LABEL, resolveRunWorkdir, skillPath } from './host.js'
 import { CodexRunner, runPointer } from './runner.js'
 
 // ─── The integration daemon binary ──────────────────────────────────────────
@@ -20,8 +20,17 @@ import { CodexRunner, runPointer } from './runner.js'
 // codex-rs/core/src/tools/handlers/mcp.rs: `mcp__` prefix, `__` delimiter),
 // then one pointer to the skill — the one line only this package knows — in
 // the profiles whose runs can open it (`runPointer`: an answer run has no file
-// tool and no web). The skill file follows the manual the same texts announce
-// (`manualPath`).
+// tool and no web), naming the manual's address as the texts in hand announce
+// it. Two placements follow the same texts from then on: the skill file
+// follows the manual they announce (`manualPath`: synced at daemon start and
+// whenever the texts change, and retried while it is not the announced
+// version), and this agent's identity block in `$CODEX_HOME/AGENTS.md` follows
+// the served identity line (`anchorPath`: only this agent's own block, under
+// the engine's rules; none is created, and one edited by hand or another
+// agent's is left as it is). For Codex that block is the only way the
+// identity line reaches a run:
+// Codex loads AGENTS.md into every run, answer runs included, and the preset
+// hands a run no identity line of its own.
 //
 // The runner is built per identity (a `RunnerFactory`), so every run pins
 // `mcp_servers.agentchat.url` to the hosted server of the agent the daemon
@@ -63,8 +72,12 @@ async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
     runner,
     client: CLIENT,
     manualPointer: runPointer(profile, skillPath()),
-    // The skill follows the manual the served texts announce, on their cadence.
+    // The skill follows the manual the served texts announce.
     manualPath: skillPath(),
+    // This agent's identity block in AGENTS.md follows the served identity line;
+    // a non-empty AGENTS.override.md, which Codex reads instead, is said with every follow.
+    anchorPath: anchorFile(),
+    anchorNotLoaded,
   })
 }
 
