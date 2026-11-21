@@ -8,7 +8,6 @@ import {
   hostedMcpUrl,
   log,
   offerDeclined,
-  readAnchorHandleAt,
   anchorIsCurrentAt,
   removeAnchorAt,
   renderAnchorBlock,
@@ -19,7 +18,7 @@ import {
   type ManualSyncResult,
   type ServedManual,
 } from '@agentchatme/agent-core'
-import { API_KEY_ENV, CLIENT, MCP_SERVER_NAME, anchorFile, configPath, dotEnvPath, hooksPath, hostCopy, identityHome, skillDir, skillPath } from './host.js'
+import { API_KEY_ENV, CLIENT, MCP_SERVER_NAME, anchorFile, anchorNotLoaded, configPath, dotEnvPath, hooksPath, hostCopy, identityHome, skillDir, skillPath } from './host.js'
 import { headersHelperCommand, headersHelperPathFor, headersHelperProblem, headersHelperState, writeHeadersHelper } from './headers-helper.js'
 
 // ─── Placement: the four texts, where Codex loads them ──────────────────────
@@ -540,6 +539,9 @@ export function placeIdentityLine(handle: string, identityLine: string | null): 
     // shape an earlier release wrote), every other one removed.
     const current = anchorIsCurrentAt(anchorFile(), identityLine, handle)
     if (!current) writeAnchor(anchorFile(), renderAnchorBlock(identityLine, handle), handle)
+    // Placed, but not loaded: Codex reads a non-empty AGENTS.override.md instead (never written here).
+    const notLoaded = anchorNotLoaded(handle)
+    if (notLoaded !== null) return { name: 'identity', status: 'warned', detail: `identity line for @${handle} in ${anchorFile()}; ${notLoaded}` }
     return { name: 'identity', status: current ? 'ok' : 'changed', detail: `identity line for @${handle} in ${anchorFile()}` }
   } catch (err) {
     return { name: 'identity', status: 'failed', detail: `could not write the identity line to ${anchorFile()}: ${String(err)}` }
@@ -722,43 +724,6 @@ export interface PlacementCheck {
   readonly verdict?: 'PASS' | 'WARN' | 'FAIL'
 }
 
-/**
- * The identity line's check. An AGENTS.md that cannot be read (permissions,
- * a symlink loop, not UTF-8) fails this check alone: every other check, and
- * every repair `doctor --fix` makes, still runs.
- */
-function identityCheck(identity: PlacementIdentity): PlacementCheck {
-  let claimed: string | null
-  let current: boolean | null
-  try {
-    // The template recognises a block an earlier release wrote in today's
-    // served words (no handle line), so it reads as older text, not missing.
-    claimed = readAnchorHandleAt(anchorFile(), identity.identityLineTemplate)
-    // null: the served texts were unavailable, so only the handle can be checked.
-    current = identity.identityLine === null ? null : anchorIsCurrentAt(anchorFile(), identity.identityLine, identity.handle)
-  } catch (err) {
-    return { name: 'identity', ok: false, verdict: 'FAIL', detail: `cannot read ${anchorFile()}: ${err instanceof Error ? err.message : String(err)}` }
-  }
-  // This agent's block in older words (or without the handle line, or next
-  // to a second AgentChat block) still tells the agent who it is: not
-  // current, nothing broken — a WARN (`–`), as the shared doctor reports it.
-  // A wrong handle or no block is a FAIL.
-  const older = current === false && claimed === identity.handle
-  return {
-    name: 'identity',
-    ok: current === true || (current === null && claimed === identity.handle),
-    ...(older ? { verdict: 'WARN' as const } : {}),
-    detail: current === true
-      ? `identity line for @${identity.handle} in ${anchorFile()}`
-      : current === null && claimed === identity.handle
-        ? `identity line for @${identity.handle} in ${anchorFile()} (served texts unavailable — currency not checked)`
-      : claimed === null
-        ? `identity line missing from ${anchorFile()}`
-        : claimed !== identity.handle
-          ? `${anchorFile()} says @${claimed} but this agent is @${identity.handle}`
-          : `${anchorFile()} carries an older identity text (or a second AgentChat block) — install or \`doctor --fix\` rewrites it`,
-  }
-}
 
 /**
  * For `status` and `doctor`: is everything where it should be? `manual` is
@@ -768,7 +733,9 @@ function identityCheck(identity: PlacementIdentity): PlacementCheck {
 export function checkPlacement(identity: PlacementIdentity | null, manual: ServedManual | null): PlacementCheck[] {
   const checks: PlacementCheck[] = []
   if (identity) {
-    checks.push(identityCheck(identity))
+    // The identity line is not one of these: agent-core's `status` header and
+    // `doctor` (`identity-line`) read it with the daemon's own rules and say
+    // it once (with the AGENTS.override.md caveat, `anchorNotLoaded`).
     const inDotEnv = keysInDotEnv()
     const handWritten = inspectMcpBlock(identity.apiBase) === 'foreign' && handWrittenReadsKeyVariable()
     checks.push(
