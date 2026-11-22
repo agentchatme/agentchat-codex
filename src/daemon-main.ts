@@ -2,7 +2,7 @@ import { parseArgs } from 'node:util'
 import * as path from 'node:path'
 import { hostedMcpUrl, resolveRunProfile } from '@agentchatme/agent-core'
 import { runIntegration, type RunnerFactory, type RunnerIdentity } from '@agentchatme/agent-core/daemon'
-import { anchorFile, anchorNotLoaded, CLIENT, codexHome, identityHome, LABEL, resolveRunWorkdir, skillPath } from './host.js'
+import { anchorFile, anchorLoadNote, CLIENT, codexHome, identityHome, LABEL, resolveRunWorkdir, skillPath } from './host.js'
 import { CodexRunner, runPointer } from './runner.js'
 
 // ─── The integration daemon binary ──────────────────────────────────────────
@@ -75,9 +75,9 @@ async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
     // The skill follows the manual the served texts announce.
     manualPath: skillPath(),
     // This agent's identity block in AGENTS.md follows the served identity line;
-    // a non-empty AGENTS.override.md, which Codex reads instead, is said with every follow.
+    // a non-empty AGENTS.override.md, which Codex reads instead, is judged and said with every follow.
     anchorPath: anchorFile(),
-    anchorNotLoaded,
+    anchorLoadNote,
   })
 }
 

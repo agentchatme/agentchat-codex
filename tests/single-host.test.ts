@@ -898,19 +898,49 @@ describe('an AGENTS.override.md, which Codex reads instead of AGENTS.md', () => 
     expect(fs.statSync(agentsMd()).ino).toBe(anchorBefore)
   })
 
-  it('blank, or holding this agent\'s block (the user moved it there): Codex sees the line, nothing is said', { timeout: 60_000 }, async () => {
+  it('holding this agent\'s block, current: ok (a PASS), and status and doctor say Codex loads it from there', { timeout: 60_000 }, async () => {
     giveCodexAnIdentity()
     expect((await run([])).code).toBe(0)
-    for (const text of [' \n\t\n', `# Mine\n\n${BLOCK('codex-agent')}\n`]) {
-      fs.writeFileSync(override(), text)
-      const status = (await run(['status'])).stdout
-      expect(status, JSON.stringify(text)).toContain(`Identity line: current (${agentsMd()})`)
-      expect(status).not.toContain('AGENTS.override.md')
-      expect((await run(['doctor'])).stdout).toContain(`PASS identity-line: @codex-agent in ${agentsMd()}`)
-    }
-    // A directory of that name is not a file Codex reads.
+    const LOADS = 'Codex loads AGENTS.override.md instead of AGENTS.md, and the AgentChat block there is current'
+    fs.writeFileSync(override(), `# Mine\n\n${BLOCK('codex-agent')}\n`)
+    const status = (await run(['status'])).stdout
+    expect(status).toContain(`Identity line: current (${agentsMd()}); ${LOADS}`)
+    expect((await run(['doctor'])).stdout).toContain(`PASS identity-line: @codex-agent in ${agentsMd()}; ${LOADS}`)
+  })
+
+  it('holding this agent\'s block with an older text: a WARN naming AGENTS.override.md, which nothing updates; --fix writes neither file', { timeout: 60_000 }, async () => {
+    giveCodexAnIdentity()
+    expect((await run([])).code).toBe(0)
+    const STALE =
+      'Codex loads AGENTS.override.md instead of AGENTS.md, and the AgentChat block there carries an older identity text for @codex-agent; nothing updates that file (the daemon never writes it), so update the block there by hand from AGENTS.md or remove AGENTS.override.md'
+    const older = `# Mine\n\n${BLOCK('codex-agent', (h) => `I am @${h} on AgentChat. A line served long ago.`)}\n`
+    fs.writeFileSync(override(), older)
+    const status = (await run(['status'])).stdout
+    // The AGENTS.md verdict stays, and the file Codex actually loads is named.
+    expect(status).toContain(`Identity line: @codex-agent in ${agentsMd()}; ${STALE}`)
+    expect(status).not.toContain('Identity line: current')
+    const anchorBefore = fs.statSync(agentsMd()).ino
+    const doctor = (await run(['doctor', '--fix'])).stdout
+    expect(doctor).toContain(`WARN identity-line: @codex-agent in ${agentsMd()}; ${STALE}`)
+    expect(fs.readFileSync(override(), 'utf-8')).toBe(older)
+    expect(fs.statSync(agentsMd()).ino).toBe(anchorBefore)
+    // Updated by hand: current again, and said.
+    fs.writeFileSync(override(), `# Mine\n\n${BLOCK('codex-agent')}\n`)
+    expect((await run(['status'])).stdout).toContain(`Identity line: current (${agentsMd()}); Codex loads AGENTS.override.md instead of AGENTS.md, and the AgentChat block there is current`)
+  })
+
+  it('blank (whitespace only) or a directory of that name: not a file Codex reads, nothing is said', { timeout: 60_000 }, async () => {
+    giveCodexAnIdentity()
+    expect((await run([])).code).toBe(0)
+    fs.writeFileSync(override(), ' \n\t\n')
+    const status = (await run(['status'])).stdout
+    expect(status).toContain(`Identity line: current (${agentsMd()})`)
+    expect(status).not.toContain('AGENTS.override.md')
+    expect((await run(['doctor'])).stdout).toContain(`PASS identity-line: @codex-agent in ${agentsMd()}`)
     fs.rmSync(override())
     fs.mkdirSync(override())
-    expect((await run(['status'])).stdout).toContain(`Identity line: current (${agentsMd()})`)
+    const dir = (await run(['status'])).stdout
+    expect(dir).toContain(`Identity line: current (${agentsMd()})`)
+    expect(dir).not.toContain('AGENTS.override.md')
   })
 })

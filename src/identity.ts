@@ -32,7 +32,7 @@ import {
   type StatusContext,
 } from '@agentchatme/agent-core'
 import { codexAnswerFallbackWorkdir, deniedAncestorOf } from '@agentchatme/agent-core/presets'
-import { CLIENT, identityHome, anchorFile, anchorNotLoaded, codexHome, invocation, LABEL, resolveRunWorkdir, runWorkdirFor } from './host.js'
+import { CLIENT, identityHome, anchorFile, anchorLoadNote, codexHome, invocation, LABEL, resolveRunWorkdir, runWorkdirFor } from './host.js'
 import { checkPlacement, placeAll, placementMark, skillPresent, unplaceIdentity, type PlacementIdentity } from './placement.js'
 import { CodexRunner, codexIsLoggedIn, guardsHomeWorkdir, inspectCodexRuntime, OWN_PROFILE_LINE, OWN_PROFILE_WARNING, profileNote } from './runner.js'
 import { listenerServiceCurrent, ensureListenerService } from './service.js'
@@ -84,8 +84,8 @@ const profile: HostProfile = {
   client: CLIENT,
   home: identityHome,
   anchorFile,
-  // Codex reads a non-empty AGENTS.override.md instead: said by status, doctor and the daemon, never written.
-  anchorNotLoaded,
+  // Codex reads a non-empty AGENTS.override.md instead: its block is what status, doctor and the daemon judge; never written.
+  anchorLoadNote,
   invocation,
   renderAnchor: renderAnchorBlock,
   isWired: skillPresent,

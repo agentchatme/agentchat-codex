@@ -18,7 +18,7 @@ import {
   type ManualSyncResult,
   type ServedManual,
 } from '@agentchatme/agent-core'
-import { API_KEY_ENV, CLIENT, MCP_SERVER_NAME, anchorFile, anchorNotLoaded, configPath, dotEnvPath, hooksPath, hostCopy, identityHome, skillDir, skillPath } from './host.js'
+import { API_KEY_ENV, CLIENT, MCP_SERVER_NAME, anchorFile, anchorLoadNote, configPath, dotEnvPath, hooksPath, hostCopy, identityHome, skillDir, skillPath } from './host.js'
 import { headersHelperCommand, headersHelperPathFor, headersHelperProblem, headersHelperState, writeHeadersHelper } from './headers-helper.js'
 
 // ─── Placement: the four texts, where Codex loads them ──────────────────────
@@ -539,10 +539,10 @@ export function placeIdentityLine(handle: string, identityLine: string | null): 
     // shape an earlier release wrote), every other one removed.
     const current = anchorIsCurrentAt(anchorFile(), identityLine, handle)
     if (!current) writeAnchor(anchorFile(), renderAnchorBlock(identityLine, handle), handle)
-    // Placed, but not loaded: Codex reads a non-empty AGENTS.override.md instead (never written here).
-    const notLoaded = anchorNotLoaded(handle)
-    if (notLoaded !== null) return { name: 'identity', status: 'warned', detail: `identity line for @${handle} in ${anchorFile()}; ${notLoaded}` }
-    return { name: 'identity', status: current ? 'ok' : 'changed', detail: `identity line for @${handle} in ${anchorFile()}` }
+    // Placed; but Codex reads a non-empty AGENTS.override.md instead, whose block is what counts (never written here).
+    const loads = anchorLoadNote(handle, { identityLine, template: null })
+    if (loads !== null && !loads.ok) return { name: 'identity', status: 'warned', detail: `identity line for @${handle} in ${anchorFile()}; ${loads.note}` }
+    return { name: 'identity', status: current ? 'ok' : 'changed', detail: `identity line for @${handle} in ${anchorFile()}${loads !== null ? `; ${loads.note}` : ''}` }
   } catch (err) {
     return { name: 'identity', status: 'failed', detail: `could not write the identity line to ${anchorFile()}: ${String(err)}` }
   }
@@ -735,7 +735,7 @@ export function checkPlacement(identity: PlacementIdentity | null, manual: Serve
   if (identity) {
     // The identity line is not one of these: agent-core's `status` header and
     // `doctor` (`identity-line`) read it with the daemon's own rules and say
-    // it once (with the AGENTS.override.md caveat, `anchorNotLoaded`).
+    // it once (with what Codex loads from AGENTS.override.md, `anchorLoadNote`).
     const inDotEnv = keysInDotEnv()
     const handWritten = inspectMcpBlock(identity.apiBase) === 'foreign' && handWrittenReadsKeyVariable()
     checks.push(

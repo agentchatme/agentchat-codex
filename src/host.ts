@@ -1,7 +1,19 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, RUN_BUDGET_ENV, RUN_PROFILE_ENV, MANUAL_FILENAME, MANUAL_SKILL_NAME, identityBlockState, serviceLabelFor, type IntegrationClient } from '@agentchatme/agent-core'
+import {
+  INTEGRATION_ENV,
+  INTEGRATION_ENV_LEGACY,
+  RUN_BUDGET_ENV,
+  RUN_PROFILE_ENV,
+  MANUAL_FILENAME,
+  MANUAL_SKILL_NAME,
+  identityBlockState,
+  serviceLabelFor,
+  type AnchorLoadNote,
+  type AnchorServedLine,
+  type IntegrationClient,
+} from '@agentchatme/agent-core'
 import { VERSION } from './version.js'
 
 // ─── The only file in this repo that knows a host exists ────────────────────
@@ -32,27 +44,35 @@ export function anchorFile(): string {
   return path.join(codexHome(), 'AGENTS.md')
 }
 
-/** The file Codex reads in place of AGENTS.md when it has any text (`anchorNotLoaded`). Never written here: it is the user's. */
+/** The file Codex reads in place of AGENTS.md when it has any text (`anchorLoadNote`). Never written here: it is the user's. */
 export function anchorOverrideFile(): string {
   return path.join(codexHome(), 'AGENTS.override.md')
 }
 
 /**
- * Why Codex does not load the identity line in AGENTS.md now, or null when
- * it does. Codex loads ONE global instruction file: `AGENTS.override.md` in
- * `$CODEX_HOME` when it is a file whose text, trimmed, is not empty, and only
- * otherwise `AGENTS.md` (openai/codex rust-v0.169.0,
- * codex-rs/codex-home/src/instructions/mod.rs:43-78, `load_from_codex_home`:
- * `LOCAL_AGENTS_MD_FILENAME` is tried first, a directory or a missing file is
- * skipped, a file it cannot read is skipped with a warning, and the first
- * non-empty one wins). So with such an override no Codex session and no
- * listener run sees the block in AGENTS.md, however current it is.
+ * Which file Codex loads when it is not AGENTS.md, and whether the identity
+ * line there is the served one; null when Codex loads AGENTS.md. Codex loads
+ * ONE global instruction file: `AGENTS.override.md` in `$CODEX_HOME` when it
+ * is a file whose text, trimmed, is not empty, and only otherwise `AGENTS.md`
+ * (openai/codex rust-v0.169.0, codex-rs/codex-home/src/instructions/mod.rs:43-78,
+ * `load_from_codex_home`: `LOCAL_AGENTS_MD_FILENAME` is tried first, a
+ * directory or a missing file is skipped, a file it cannot read is skipped
+ * with a warning, and the first non-empty one wins). So with such an
+ * override no Codex session and no listener run sees the block in AGENTS.md,
+ * however current it is: the override's own block is what counts, judged
+ * against the served line (`served`, the texts in hand) the way the daemon
+ * judges AGENTS.md (agent-core's `identityBlockState`, on the SDK kit's
+ * `decide`):
  *
- * An override that carries this agent's own block (the user added it there)
- * is loaded, and that is fine: null. Nothing here writes the override; what
- * is in it is the user's to keep.
+ *   - this agent's block, the served one: ok, and said (Codex loads it from there);
+ *   - this agent's block, older text: not ok — the daemon never writes the
+ *     override, so the user updates it by hand or removes the file;
+ *   - no block, one edited by hand, another agent's: not ok — no identity
+ *     line of this agent's reaches Codex.
+ *
+ * Nothing here writes the override: what is in it is the user's to keep.
  */
-export function anchorNotLoaded(handle: string): string | null {
+export function anchorLoadNote(handle: string, served: AnchorServedLine): AnchorLoadNote | null {
   const override = anchorOverrideFile()
   let text: string
   try {
@@ -63,9 +83,19 @@ export function anchorNotLoaded(handle: string): string | null {
     return null
   }
   if (text.trim().length === 0) return null
-  const own = identityBlockState(override, { handle, identityLine: null, template: null })
-  if (own.state === 'current' || own.state === 'stale') return null
-  return 'Codex reads AGENTS.override.md instead of AGENTS.md, so it does not load the AgentChat identity line; add the block to AGENTS.override.md or remove that file'
+  const own = identityBlockState(override, { handle, identityLine: served.identityLine, template: served.template })
+  if (own.state === 'current') {
+    return own.checked
+      ? { ok: true, note: 'Codex loads AGENTS.override.md instead of AGENTS.md, and the AgentChat block there is current' }
+      : { ok: true, note: "Codex loads AGENTS.override.md instead of AGENTS.md; the AgentChat block there is this agent's (not checked: served texts unavailable)" }
+  }
+  if (own.state === 'stale') {
+    return {
+      ok: false,
+      note: `Codex loads AGENTS.override.md instead of AGENTS.md, and the AgentChat block there carries an older identity text for @${own.claimed ?? handle}; nothing updates that file (the daemon never writes it), so update the block there by hand from AGENTS.md or remove AGENTS.override.md`,
+    }
+  }
+  return { ok: false, note: 'Codex reads AGENTS.override.md instead of AGENTS.md, so it does not load the AgentChat identity line; add the block to AGENTS.override.md or remove that file' }
 }
 
 export function configPath(): string {

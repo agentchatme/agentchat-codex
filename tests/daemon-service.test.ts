@@ -258,6 +258,32 @@ describe('the identity line in AGENTS.md follows the served texts', () => {
     expect(status.identity_line).toMatchObject({ outcome: 'updated', not_loaded: said })
   }, 30_000)
 
+  it('with this agent\'s block in AGENTS.override.md: an older copy there is a warning with every follow (the override never written); a current one is said, not warned', async () => {
+    const codexHome = path.join(sandbox, '.codex')
+    const home = path.join(codexHome, 'agentchat')
+    signIn(home, 'codex-agent')
+    keepTexts(home, NEW_LINE)
+    const agentsMd = path.join(codexHome, 'AGENTS.md')
+    fs.writeFileSync(agentsMd, `${USER}\n\n${block('codex-agent', NEW_LINE)}\n`)
+    const override = path.join(codexHome, 'AGENTS.override.md')
+    const staleCopy = `# Mine\n\n${block('codex-agent', OLD_LINE)}\n`
+    fs.writeFileSync(override, staleCopy)
+    let run = await runFor(DAEMON, ['--home', home], 6000)
+    expect(run.alive, run.out).toBe(true)
+    expect(run.out).toMatch(/\[agentchat:warn\] identity line: unchanged — .*; Codex loads AGENTS\.override\.md instead of AGENTS\.md, and the AgentChat block there carries an older identity text for @codex-agent; nothing updates that file \(the daemon never writes it\)/)
+    expect(fs.readFileSync(override, 'utf-8')).toBe(staleCopy)
+    let status = JSON.parse(fs.readFileSync(path.join(home, 'integration.status.json'), 'utf-8')) as { identity_line?: { not_loaded?: string | null } }
+    expect(status.identity_line?.not_loaded).toMatch(/older identity text for @codex-agent/)
+
+    fs.writeFileSync(override, `# Mine\n\n${block('codex-agent', NEW_LINE)}\n`)
+    run = await runFor(DAEMON, ['--home', home], 6000)
+    expect(run.alive, run.out).toBe(true)
+    expect(run.out).not.toMatch(/\[agentchat:warn\] identity line:/)
+    status = JSON.parse(fs.readFileSync(path.join(home, 'integration.status.json'), 'utf-8')) as { identity_line?: { not_loaded?: string | null; detail?: string } }
+    expect(status.identity_line?.not_loaded).toBeNull()
+    expect(status.identity_line?.detail).toContain('Codex loads AGENTS.override.md instead of AGENTS.md, and the AgentChat block there is current')
+  }, 40_000)
+
   it('a hand-edited block, and an AGENTS.md with no block, are left exactly as they are', async () => {
     const codexHome = path.join(sandbox, '.codex')
     const home = path.join(codexHome, 'agentchat')
