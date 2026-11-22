@@ -226,7 +226,9 @@ function runUninstall(): number {
   markAlwaysOnOptOut(home)
 
   // The identity file is kept by uninstall: its key is what may leave .env.
-  const steps = removePlacement(readCredentials(identityHome())?.api_key ?? null)
+  const creds = readCredentials(identityHome())
+  // Its identity block is the one removed; any other is left.
+  const steps = removePlacement(creds?.api_key ?? null, creds?.handle ?? null)
   for (const step of steps) if (step.status === 'failed') warnings.push(step.detail)
   // The durable daemon bundle goes only once the service is verifiably gone:
   // deleting a binary a still-loaded restart policy points to creates a

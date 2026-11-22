@@ -9,12 +9,14 @@ import {
   log,
   offerDeclined,
   anchorIsCurrentAt,
+  readCachedTexts,
   removeAnchorAt,
   renderAnchorBlock,
   renderDeclinedBlock,
   renderUnregisteredBlock,
   syncManual,
   writeAnchor,
+  writeOfferAt,
   type ManualSyncResult,
   type ServedManual,
 } from '@agentchatme/agent-core'
@@ -548,11 +550,16 @@ export function placeIdentityLine(handle: string, identityLine: string | null): 
   }
 }
 
-/** No identity yet: the wizard's offer (or the silent variant after --not-now). */
+/**
+ * No identity yet: the wizard's offer (or the silent variant after
+ * --not-now), never over a block that is not itself an offer (`writeOfferAt`):
+ * a block the user wrote, or one a logout left, stays as it is.
+ */
 export function placeOffer(): PlacementStep {
   try {
     const declined = offerDeclined(identityHome())
-    writeAnchor(anchorFile(), declined ? renderDeclinedBlock(hostCopy()) : renderUnregisteredBlock(hostCopy()))
+    const written = writeOfferAt(anchorFile(), declined ? renderDeclinedBlock(hostCopy()) : renderUnregisteredBlock(hostCopy()))
+    if (written.action === 'kept') return { name: 'identity', status: 'warned', detail: written.detail }
     return { name: 'identity', status: 'changed', detail: declined ? `${path.basename(anchorFile())}: AgentChat present, not asking` : `${path.basename(anchorFile())}: setup offer (no account yet)` }
   } catch (err) {
     return { name: 'identity', status: 'failed', detail: `could not write ${anchorFile()}: ${String(err)}` }
@@ -694,8 +701,12 @@ export function unplaceIdentity(apiKey: string | null): PlacementStep[] {
   return [removeKey(apiKey), placeOffer()]
 }
 
-/** Uninstall: everything this integration placed, the identity line included. */
-export function removePlacement(apiKey: string | null): PlacementStep[] {
+/**
+ * Uninstall: everything this integration placed, the identity line included —
+ * this agent's (`handle`) identity block only, or the setup offer; a block the
+ * user wrote, or another agent's, is left and said.
+ */
+export function removePlacement(apiKey: string | null, handle: string | null = null): PlacementStep[] {
   const steps: PlacementStep[] = []
   const legacy = removeLegacyWiring()
   if (legacy) steps.push(legacy)
@@ -709,7 +720,13 @@ export function removePlacement(apiKey: string | null): PlacementStep[] {
   }
   steps.push(removeSkill())
   try {
-    steps.push({ name: 'identity', status: removeAnchorAt(anchorFile()) === 'removed' ? 'changed' : 'ok', detail: `${path.basename(anchorFile())} AgentChat block removed` })
+    const cached = readCachedTexts(identityHome(), CLIENT.runtime)
+    const removed = removeAnchorAt(anchorFile(), { handle, identityLine: cached?.texts.identity_line ?? null, template: cached?.texts.identity_line_template ?? null })
+    steps.push(
+      removed.action === 'kept'
+        ? { name: 'identity', status: 'warned', detail: removed.detail }
+        : { name: 'identity', status: removed.action === 'removed' ? 'changed' : 'ok', detail: removed.action === 'removed' ? `${path.basename(anchorFile())} AgentChat block removed` : `no AgentChat block in ${path.basename(anchorFile())}` },
+    )
   } catch (err) {
     steps.push({ name: 'identity', status: 'failed', detail: `could not remove the AgentChat block from ${anchorFile()}: ${err instanceof Error ? err.message : String(err)} — remove it by hand` })
   }
