@@ -8,18 +8,19 @@ import {
   hostedMcpUrl,
   log,
   offerDeclined,
-  readAnchorHandleAt,
-  anchorIsCurrentAt,
+  placeAnchorAt,
+  readCachedTexts,
   removeAnchorAt,
   renderAnchorBlock,
   renderDeclinedBlock,
   renderUnregisteredBlock,
   syncManual,
   writeAnchor,
+  writeOfferAt,
   type ManualSyncResult,
   type ServedManual,
 } from '@agentchatme/agent-core'
-import { API_KEY_ENV, CLIENT, MCP_SERVER_NAME, anchorFile, configPath, dotEnvPath, hooksPath, hostCopy, identityHome, skillDir, skillPath } from './host.js'
+import { API_KEY_ENV, CLIENT, MCP_SERVER_NAME, anchorFile, anchorLoadNote, configPath, dotEnvPath, hooksPath, hostCopy, identityHome, invocation, skillDir, skillPath } from './host.js'
 import { headersHelperCommand, headersHelperPathFor, headersHelperProblem, headersHelperState, writeHeadersHelper } from './headers-helper.js'
 
 // ─── Placement: the four texts, where Codex loads them ──────────────────────
@@ -524,7 +525,7 @@ export function removeSkill(): PlacementStep {
 
 // ─── the identity line ──────────────────────────────────────────────────────
 
-export function placeIdentityLine(handle: string, identityLine: string | null): PlacementStep {
+export function placeIdentityLine(handle: string, identityLine: string | null, mode: 'setup' | 'repair' = 'setup', template: string | null = null): PlacementStep {
   if (identityLine === null) {
     // The line is the server's. Without it (offline, nothing cached) nothing is
     // written: `doctor --fix` places it once the texts can be fetched.
@@ -535,22 +536,45 @@ export function placeIdentityLine(handle: string, identityLine: string | null): 
     }
   }
   try {
-    // Current = exactly this line and handle, and no second AgentChat block.
-    // Otherwise the block is rewritten in place of the first one found (any
-    // shape an earlier release wrote), every other one removed.
-    const current = anchorIsCurrentAt(anchorFile(), identityLine, handle)
-    if (!current) writeAnchor(anchorFile(), renderAnchorBlock(identityLine, handle), handle)
-    return { name: 'identity', status: current ? 'ok' : 'changed', detail: `identity line for @${handle} in ${anchorFile()}` }
+    // One policy for every integration (agent-core's `placeAnchorAt`, on the
+    // kit's `decide`): this agent's block is updated (or placed where there is
+    // none), in place and atomically; a block edited by hand, or several, is
+    // left with the remedy; another agent's is replaced at setup and said,
+    // refused by `doctor --fix`.
+    const placed = placeAnchorAt(anchorFile(), { handle, identityLine, template, mode, fix: `${invocation()} doctor --fix` })
+    // Placed; but Codex reads a non-empty AGENTS.override.md instead, whose block is what counts (never written here).
+    const loads = anchorLoadNote(handle, { identityLine, template })
+    const note = loads !== null ? `; ${loads.note}` : ''
+    switch (placed.outcome) {
+      case 'unchanged':
+      case 'placed':
+      case 'updated': {
+        const detail = `identity line for @${handle} in ${anchorFile()}${note}`
+        if (loads !== null && !loads.ok) return { name: 'identity', status: 'warned', detail }
+        return { name: 'identity', status: placed.outcome === 'unchanged' ? 'ok' : 'changed', detail }
+      }
+      case 'replaced_other':
+        return { name: 'identity', status: loads !== null && !loads.ok ? 'warned' : 'changed', detail: `${placed.detail}${note}` }
+      case 'failed':
+        return { name: 'identity', status: 'failed', detail: placed.detail }
+      default:
+        return { name: 'identity', status: 'warned', detail: placed.detail }
+    }
   } catch (err) {
     return { name: 'identity', status: 'failed', detail: `could not write the identity line to ${anchorFile()}: ${String(err)}` }
   }
 }
 
-/** No identity yet: the wizard's offer (or the silent variant after --not-now). */
+/**
+ * No identity yet: the wizard's offer (or the silent variant after
+ * --not-now), never over a block that is not itself an offer (`writeOfferAt`):
+ * a block the user wrote, or one a logout left, stays as it is.
+ */
 export function placeOffer(): PlacementStep {
   try {
     const declined = offerDeclined(identityHome())
-    writeAnchor(anchorFile(), declined ? renderDeclinedBlock(hostCopy()) : renderUnregisteredBlock(hostCopy()))
+    const written = writeOfferAt(anchorFile(), declined ? renderDeclinedBlock(hostCopy()) : renderUnregisteredBlock(hostCopy()))
+    if (written.action === 'kept') return { name: 'identity', status: 'warned', detail: written.detail }
     return { name: 'identity', status: 'changed', detail: declined ? `${path.basename(anchorFile())}: AgentChat present, not asking` : `${path.basename(anchorFile())}: setup offer (no account yet)` }
   } catch (err) {
     return { name: 'identity', status: 'failed', detail: `could not write ${anchorFile()}: ${String(err)}` }
@@ -663,7 +687,12 @@ export function removeLegacyWiring(): PlacementStep | null {
  * `manual` is what the served texts announce (null when none are in hand: an
  * existing skill is kept, a missing one gets the bundled copy).
  */
-export async function placeAll(identity: PlacementIdentity | null, manual: ServedManual | null): Promise<PlacementStep[]> {
+/**
+ * Every placement for an identity (or the setup offer without one). `identityMode`:
+ * `setup` for install, register, login and recover; `repair` for `doctor --fix`
+ * (another agent's identity block is refused, not replaced).
+ */
+export async function placeAll(identity: PlacementIdentity | null, manual: ServedManual | null, identityMode: 'setup' | 'repair' = 'setup'): Promise<PlacementStep[]> {
   const steps: PlacementStep[] = []
   const legacy = removeLegacyWiring()
   if (legacy) steps.push(legacy)
@@ -676,7 +705,7 @@ export async function placeAll(identity: PlacementIdentity | null, manual: Serve
     steps.push(mcp)
     if (mcp.status === 'ok' || mcp.status === 'changed') steps.push(clearDotEnvKey(identity.apiKey))
     else if (mcp.status === 'skipped' && handWrittenReadsKeyVariable()) steps.push(keepDotEnvKeyForHandWritten(identity.apiKey))
-    steps.push(placeIdentityLine(identity.handle, identity.identityLine))
+    steps.push(placeIdentityLine(identity.handle, identity.identityLine, identityMode, identity.identityLineTemplate))
   } else {
     steps.push(placeOffer())
   }
@@ -689,11 +718,18 @@ export async function placeAll(identity: PlacementIdentity | null, manual: Serve
  * MCP block, the manual and the skill stay.
  */
 export function unplaceIdentity(apiKey: string | null): PlacementStep[] {
-  return [removeKey(apiKey), placeOffer()]
+  // A block logout left (not this agent's) also keeps the offer out; logout's
+  // own line already says what was left, so the offer step says nothing then.
+  const offer = placeOffer()
+  return offer.status === 'warned' ? [removeKey(apiKey)] : [removeKey(apiKey), offer]
 }
 
-/** Uninstall: everything this integration placed, the identity line included. */
-export function removePlacement(apiKey: string | null): PlacementStep[] {
+/**
+ * Uninstall: everything this integration placed, the identity line included —
+ * this agent's (`handle`) identity block only, or the setup offer; a block the
+ * user wrote, or another agent's, is left and said.
+ */
+export function removePlacement(apiKey: string | null, handle: string | null = null): PlacementStep[] {
   const steps: PlacementStep[] = []
   const legacy = removeLegacyWiring()
   if (legacy) steps.push(legacy)
@@ -707,7 +743,13 @@ export function removePlacement(apiKey: string | null): PlacementStep[] {
   }
   steps.push(removeSkill())
   try {
-    steps.push({ name: 'identity', status: removeAnchorAt(anchorFile()) === 'removed' ? 'changed' : 'ok', detail: `${path.basename(anchorFile())} AgentChat block removed` })
+    const cached = readCachedTexts(identityHome(), CLIENT.runtime)
+    const removed = removeAnchorAt(anchorFile(), { handle, identityLine: cached?.texts.identity_line ?? null, template: cached?.texts.identity_line_template ?? null })
+    steps.push(
+      removed.action === 'kept'
+        ? { name: 'identity', status: 'warned', detail: removed.detail }
+        : { name: 'identity', status: removed.action === 'removed' ? 'changed' : 'ok', detail: removed.action === 'removed' ? `${path.basename(anchorFile())} AgentChat block removed` : `no AgentChat block in ${path.basename(anchorFile())}` },
+    )
   } catch (err) {
     steps.push({ name: 'identity', status: 'failed', detail: `could not remove the AgentChat block from ${anchorFile()}: ${err instanceof Error ? err.message : String(err)} — remove it by hand` })
   }
@@ -722,43 +764,6 @@ export interface PlacementCheck {
   readonly verdict?: 'PASS' | 'WARN' | 'FAIL'
 }
 
-/**
- * The identity line's check. An AGENTS.md that cannot be read (permissions,
- * a symlink loop, not UTF-8) fails this check alone: every other check, and
- * every repair `doctor --fix` makes, still runs.
- */
-function identityCheck(identity: PlacementIdentity): PlacementCheck {
-  let claimed: string | null
-  let current: boolean | null
-  try {
-    // The template recognises a block an earlier release wrote in today's
-    // served words (no handle line), so it reads as older text, not missing.
-    claimed = readAnchorHandleAt(anchorFile(), identity.identityLineTemplate)
-    // null: the served texts were unavailable, so only the handle can be checked.
-    current = identity.identityLine === null ? null : anchorIsCurrentAt(anchorFile(), identity.identityLine, identity.handle)
-  } catch (err) {
-    return { name: 'identity', ok: false, verdict: 'FAIL', detail: `cannot read ${anchorFile()}: ${err instanceof Error ? err.message : String(err)}` }
-  }
-  // This agent's block in older words (or without the handle line, or next
-  // to a second AgentChat block) still tells the agent who it is: not
-  // current, nothing broken — a WARN (`–`), as the shared doctor reports it.
-  // A wrong handle or no block is a FAIL.
-  const older = current === false && claimed === identity.handle
-  return {
-    name: 'identity',
-    ok: current === true || (current === null && claimed === identity.handle),
-    ...(older ? { verdict: 'WARN' as const } : {}),
-    detail: current === true
-      ? `identity line for @${identity.handle} in ${anchorFile()}`
-      : current === null && claimed === identity.handle
-        ? `identity line for @${identity.handle} in ${anchorFile()} (served texts unavailable — currency not checked)`
-      : claimed === null
-        ? `identity line missing from ${anchorFile()}`
-        : claimed !== identity.handle
-          ? `${anchorFile()} says @${claimed} but this agent is @${identity.handle}`
-          : `${anchorFile()} carries an older identity text (or a second AgentChat block) — install or \`doctor --fix\` rewrites it`,
-  }
-}
 
 /**
  * For `status` and `doctor`: is everything where it should be? `manual` is
@@ -768,7 +773,9 @@ function identityCheck(identity: PlacementIdentity): PlacementCheck {
 export function checkPlacement(identity: PlacementIdentity | null, manual: ServedManual | null): PlacementCheck[] {
   const checks: PlacementCheck[] = []
   if (identity) {
-    checks.push(identityCheck(identity))
+    // The identity line is not one of these: agent-core's `status` header and
+    // `doctor` (`identity-line`) read it with the daemon's own rules and say
+    // it once (with what Codex loads from AGENTS.override.md, `anchorLoadNote`).
     const inDotEnv = keysInDotEnv()
     const handWritten = inspectMcpBlock(identity.apiBase) === 'foreign' && handWrittenReadsKeyVariable()
     checks.push(

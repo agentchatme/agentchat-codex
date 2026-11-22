@@ -21,7 +21,7 @@ import {
   renderDeclinedBlock,
   resolveRunProfile,
   workdirExposesHome,
-  writeAnchor,
+  writeOfferAt,
   type DoctorCheck,
   type DoctorContext,
   type DoctorOpts,
@@ -32,7 +32,7 @@ import {
   type StatusContext,
 } from '@agentchatme/agent-core'
 import { codexAnswerFallbackWorkdir, deniedAncestorOf } from '@agentchatme/agent-core/presets'
-import { CLIENT, identityHome, anchorFile, codexHome, invocation, LABEL, resolveRunWorkdir, runWorkdirFor } from './host.js'
+import { CLIENT, identityHome, anchorFile, anchorLoadNote, codexHome, invocation, LABEL, resolveRunWorkdir, runWorkdirFor } from './host.js'
 import { checkPlacement, placeAll, placementMark, skillPresent, unplaceIdentity, type PlacementIdentity } from './placement.js'
 import { CodexRunner, codexIsLoggedIn, guardsHomeWorkdir, inspectCodexRuntime, OWN_PROFILE_LINE, OWN_PROFILE_WARNING, profileNote } from './runner.js'
 import { listenerServiceCurrent, ensureListenerService } from './service.js'
@@ -84,6 +84,8 @@ const profile: HostProfile = {
   client: CLIENT,
   home: identityHome,
   anchorFile,
+  // Codex reads a non-empty AGENTS.override.md instead: its block is what status, doctor and the daemon judge; never written.
+  anchorLoadNote,
   invocation,
   renderAnchor: renderAnchorBlock,
   isWired: skillPresent,
@@ -148,7 +150,8 @@ async function runtimeChecks(): Promise<DoctorCheck[]> {
 
 async function placementChecks(fix: boolean, texts: ServedIdentityTexts, manual: ServedManual | null): Promise<DoctorCheck[]> {
   const identity = currentPlacementIdentity(texts)
-  if (fix) await placeAll(identity, manual)
+  // doctor --fix: another agent's identity block is refused, not replaced.
+  if (fix) await placeAll(identity, manual, 'repair')
   return checkPlacement(identity, manual)
     .filter((c) => c.name !== 'identity') // the shared doctor already reports the identity line
     .map((c) => ({
@@ -352,7 +355,9 @@ export function runNotNow(): number {
   const home = identityHome()
   recordOfferDeclined(home)
   try {
-    writeAnchor(anchorFile(), renderDeclinedBlock({ invoke: invocation(), label: LABEL }))
+    // Never over a block that is not the offer: a block the user wrote stays.
+    const written = writeOfferAt(anchorFile(), renderDeclinedBlock({ invoke: invocation(), label: LABEL }))
+    if (written.action === 'kept') console.log(`Recorded; ${written.detail}`)
   } catch (err) {
     console.error(`Recorded, but could not update ${path.basename(anchorFile())}: ${String(err)}`)
     return 1
