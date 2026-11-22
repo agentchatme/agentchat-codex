@@ -488,10 +488,15 @@ describe('doctor', () => {
     fs.writeFileSync(agentsMd(), '<!-- agentchat:start -->\nI am @claude-agent on AgentChat (api.agentchat.me).\n<!-- agentchat:end -->\n')
     const before = snapshot(claudeDir())
     const seen = await run(['doctor'])
-    // No handle line and not a served text: the user's (never rewritten unattended), and it names the other agent.
-    expect(seen.stdout).toContain(`WARN identity-line: the AgentChat block in ${agentsMd()} was edited by hand (no handle line, and not a text AgentChat served), so it is left as it is; it names @claude-agent, not @codex-agent`)
-    const fixed = await run(['doctor', '--fix'])
-    expect(fixed.stdout).toContain('repaired → @codex-agent')
+    // No handle line and not a served text: not plainly AgentChat's, so it is the person's to delete; it names the other agent.
+    expect(seen.stdout).toContain(
+      `WARN identity-line: the AgentChat block in ${agentsMd()} was edited by hand (no handle line, and not a text AgentChat served), so it is left (it names @claude-agent, not @codex-agent); to have the served line, delete that block, then run \`npx -y @agentchatme/codex doctor --fix\``,
+    )
+    await run(['doctor', '--fix'])
+    expect(fs.readFileSync(agentsMd(), 'utf-8')).toBe('<!-- agentchat:start -->\nI am @claude-agent on AgentChat (api.agentchat.me).\n<!-- agentchat:end -->\n')
+    // Deleted by the person: the next --fix places this agent's line.
+    fs.writeFileSync(agentsMd(), '')
+    expect((await run(['doctor', '--fix'])).stdout).toContain('repaired → @codex-agent')
     expect(fs.readFileSync(agentsMd(), 'utf-8')).toBe(`${BLOCK('codex-agent')}\n`)
     expect(snapshot(claudeDir())).toEqual(before)
   })

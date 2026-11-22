@@ -296,7 +296,7 @@ describe('the identity line in AGENTS.md follows the served texts', () => {
     let run = await runFor(DAEMON, ['--home', home], 6000)
     expect(run.alive, run.out).toBe(true)
     expect(fs.readFileSync(agentsMd, 'utf-8')).toBe(handEdited)
-    expect(run.out).toMatch(/identity line: hand_edited — the AgentChat block in .*AGENTS\.md has no handle line and is not a text AgentChat served: edited by hand, left as it is \(`doctor --fix` puts the served block back\)/)
+    expect(run.out).toMatch(/identity line: hand_edited — the AgentChat block in .*AGENTS\.md has no handle line and is not a text AgentChat served: edited by hand, left as it is \(to have the served line, delete that block, then run `doctor --fix`\)/)
 
     fs.writeFileSync(agentsMd, `${USER}\n`)
     run = await runFor(DAEMON, ['--home', home], 6000)
