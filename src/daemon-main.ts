@@ -1,6 +1,6 @@
 import { parseArgs } from 'node:util'
 import * as path from 'node:path'
-import { hostedMcpUrl, resolveRunProfile } from '@agentchatme/agent-core'
+import { hostedMcpUrl, resolveRunProfile, ensureInstallId, readRememberedHost, telemetryOff, type IntegrationClient } from '@agentchatme/agent-core'
 import { runIntegration, type RunnerFactory, type RunnerIdentity } from '@agentchatme/agent-core/daemon'
 import { anchorFile, anchorLoadNote, CLIENT, codexHome, identityHome, LABEL, resolveRunWorkdir, skillPath } from './host.js'
 import { CodexRunner, runPointer } from './runner.js'
@@ -39,6 +39,21 @@ import { CodexRunner, runPointer } from './runner.js'
 // and the key its bearer variable carries, anywhere else. A new sign-in builds
 // a new runner.
 
+/**
+ * What the daemon names itself with on every request and on the socket's
+ * hello: this integration, the home's install id (none under
+ * AGENTCHAT_TELEMETRY=off) and the runtime's version as a command last read
+ * it (`readRememberedHost`: the daemon does not run `--version` before it
+ * starts). The service runs a copy in the identity home, so no install
+ * method is known here.
+ */
+function daemonClient(home: string): IntegrationClient {
+  const installId = telemetryOff() ? null : ensureInstallId(home)
+  const host = readRememberedHost(home)
+  const { installMethod: _method, ...client } = CLIENT
+  return { ...client, ...(installId !== null ? { installId } : {}), ...(host !== null ? { host } : {}) }
+}
+
 async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   let values: { home?: string | undefined; workdir?: string | undefined }
   try {
@@ -70,7 +85,7 @@ async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
     workdir,
     profile,
     runner,
-    client: CLIENT,
+    client: daemonClient(home),
     manualPointer: runPointer(profile, skillPath()),
     // The skill follows the manual the served texts announce.
     manualPath: skillPath(),

@@ -27,6 +27,8 @@ let sandbox: string
 let fake: FakeCodex
 let server: http.Server
 let apiBase = ''
+/** X-AgentChat-Platform of every request the server saw. */
+let platforms: string[] = []
 
 const codexDir = (): string => path.join(sandbox, '.codex')
 const home = (): string => path.join(codexDir(), 'agentchat')
@@ -36,7 +38,9 @@ beforeEach(async () => {
   sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-setup-'))
   fs.mkdirSync(codexDir(), { recursive: true })
   fake = installFakeCodex(sandbox)
+  platforms = []
   server = http.createServer((req, res) => {
+    platforms.push(String(req.headers['x-agentchat-platform'] ?? ''))
     res.setHeader('content-type', 'application/json')
     if (String(req.headers['authorization'] ?? '') !== `Bearer ${KEY}`) {
       res.statusCode = 401
@@ -68,7 +72,7 @@ afterEach(async () => {
   fs.rmSync(sandbox, { recursive: true, force: true })
 })
 
-function run(args: string[], input = ''): Promise<{ code: number; out: string }> {
+function run(args: string[], input = '', extraEnv: Record<string, string> = {}): Promise<{ code: number; out: string }> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [BIN, ...args], {
       env: {
@@ -81,6 +85,7 @@ function run(args: string[], input = ''): Promise<{ code: number; out: string }>
         AGENTCHAT_API_BASE: apiBase,
         AGENTCHAT_LOG_LEVEL: 'silent',
         AGENTCHAT_SERVICE_DRY_RUN: '1',
+        ...extraEnv,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     })
@@ -147,5 +152,26 @@ describe('install ends with the verdict, not a checklist for a person', () => {
     expect(out.code, out.out).toBe(0)
     expect(out.out).not.toContain('Next:')
     expect(lastLine(out.out)).toMatch(/^Setup: no_account — .*`npx -y @agentchatme\/codex register --email <email> --handle <handle>`.*`npx -y @agentchatme\/codex login --api-key - < <that file>`/)
+  })
+})
+
+describe('every request names the host and the install', () => {
+  it('the runtime version and the install id of the home ride on every request; AGENTCHAT_TELEMETRY=off makes and sends no install id', { timeout: 60_000 }, async () => {
+    expect((await login()).code).toBe(0)
+    const id = fs.readFileSync(path.join(home(), 'install-id'), 'utf-8').trim()
+    expect(id).toMatch(/^ins_[A-Za-z0-9_-]{22}$/)
+    expect(platforms.length).toBeGreaterThan(0)
+    for (const platform of platforms) {
+      expect(platform).toContain('host="codex/0.154.0"')
+      expect(platform).toContain(`install="${id}"`)
+    }
+    // Kept for the daemon, which names it without running --version.
+    expect(fs.readFileSync(path.join(home(), 'runtime-host'), 'utf-8').trim()).toBe('codex/0.154.0')
+
+    fs.rmSync(path.join(home(), 'install-id'))
+    platforms = []
+    expect((await run(['status'], '', { AGENTCHAT_TELEMETRY: 'off' })).code).toBe(0)
+    expect(fs.existsSync(path.join(home(), 'install-id'))).toBe(false)
+    for (const platform of platforms) expect(platform).not.toContain('install=')
   })
 })

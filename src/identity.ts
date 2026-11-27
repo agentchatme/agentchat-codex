@@ -13,6 +13,7 @@ import {
   INTEGRATION_ENV,
   integrationStatusAge,
   isRunProfile,
+  hostIdentityOf,
   newerRelease,
   probeHostedMcp,
   readAlwaysOnInstalledVersion,
@@ -104,6 +105,8 @@ const profile: HostProfile = {
   },
   // The listener service, after every key change and on `doctor --fix`: never over the person's opt-out, never a downgrade.
   ensureListener: () => listenerEnsureOf(ensureListenerService()),
+  // The runtime this integration serves and its version (X-AgentChat-Platform `host`), from its own `--version`.
+  host: async () => hostIdentityOf('codex', (await inspectCodexRuntime(codexHome())).detail),
   // agent-core resolves the identity BEFORE it clears the credential: only a
   // key that came from the credential file is this agent's to take out of .env.
   unplace: (identity) => unplaceIdentity(identity?.source === 'file' ? identity.apiKey : null).map((s) => `  ${s.name}: ${s.detail}`),
@@ -120,6 +123,8 @@ const profile: HostProfile = {
       ...(runtime.every((c) => c.verdict === 'PASS') ? [await preflightCheck()] : []),
       integrationCheck(),
       ...[leaseCheck()].filter((c): c is DoctorCheck => c !== null),
+      // Last of the checks, so the shared doctor's setup verdict is the last line and its exit code the command's.
+      await hostedMcpReachCheck(),
     ]
   },
   // The shared status already fetched the served texts once; the placement
@@ -385,13 +390,9 @@ export function runNotNow(): number {
 }
 
 /** `status` prints the shared lines, then this host's placement checks and the hosted-MCP probe (`extraStatus`, one texts fetch for both). */
-export const { runRegister, runLogin, runRecover, runLogout, runStatus, confirmSetup } = commands
+export const { runRegister, runLogin, runRecover, runLogout, runStatus, confirmSetup, reportSetup } = commands
 
-export async function runDoctor(opts: DoctorOpts = {}): Promise<number> {
-  const base = await commands.runDoctor(opts)
-  const reach = await hostedMcpReachCheck()
-  console.log(`${reach.verdict.padEnd(4)} ${reach.name}: ${reach.detail}`)
-  return base !== 0 || reach.verdict === 'FAIL' ? 1 : 0
-}
+/** `doctor`: the shared checks, this host's (the hosted-tools probe last among them), then the setup verdict. */
+export const runDoctor = (opts: DoctorOpts = {}): Promise<number> => commands.runDoctor(opts)
 
 export type { RegisterOpts, DoctorOpts } from '@agentchatme/agent-core'
