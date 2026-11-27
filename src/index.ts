@@ -298,6 +298,8 @@ async function runDaemonCmd(sub: string | undefined): Promise<number> {
         removeListenerService()
       } catch (err) {
         console.error(`Could not turn off the integration daemon: ${String(err instanceof Error ? err.message : err)}`)
+        // What AgentChat was told before the removal failed.
+        if (stopped !== null) console.log(stopped)
         return 1
       }
       clearAlwaysOnWanted(home)
