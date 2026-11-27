@@ -199,7 +199,7 @@ describe('another agent’s key exported in the shell', () => {
   it('install with it exported places this home’s agent', { timeout: 30_000 }, async () => {
     const out = await run([], { AGENTCHAT_API_KEY: OTHER })
     expect(out.code, out.stdout + out.stderr).toBe(0)
-    expect(out.stdout).toContain('Connected as @codex-agent')
+    expect(out.stdout).toMatch(/^Setup: /m)
     expect(fs.existsSync(dotEnv())).toBe(false)
     expect(runHelper()).toEqual({ Authorization: `Bearer ${KEY}` })
   })
@@ -227,7 +227,7 @@ describe.skipIf(!ENGINE_REFUSES)('the engine refuses another agent’s exported 
 describe('no printed step puts a key on a command line', () => {
   it('--help names login with a prompt or stdin, never a key argument or AGENTCHAT_API_KEY=…', async () => {
     const out = (await run(['--help'])).stdout
-    expect(out).toContain('login --api-key - < key.txt')
+    expect(out).toContain('login --api-key - < <file>')
     expect(out).not.toMatch(/--api-key <ac_|AGENTCHAT_API_KEY=/)
   })
 })

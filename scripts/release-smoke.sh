@@ -78,7 +78,7 @@ for pass in first idempotent; do
   echo "$out" | grep -q "AgentChat integration for Codex $expected"
   echo "$out" | grep -q "✓ manual: "
   echo "$out" | grep -q "✓ service: integration daemon registered"
-  echo "$out" | grep -q 'Ask Codex: "Set up your AgentChat account."'
+  echo "$out" | grep -q '^Setup: no_account — '
 done
 codex_dir="$root/npxlike/home/.codex"
 head -3 "$codex_dir/skills/agentchat/SKILL.md" | grep -q "^name: agentchat" || { echo "::error::the manual is not placed as the agentchat skill"; exit 1; }
@@ -92,7 +92,7 @@ daemon_alive "$alone/daemon.mjs" "$root/daemon-durable.log"
 
 status_out="$(run_cli status 2>&1 || true)"
 echo "--- status ---"; echo "$status_out"
-echo "$status_out" | grep -q "No AgentChat identity for this Codex agent"
+echo "$status_out" | grep -q "^Setup: no_account — "
 
 removed="$(run_cli uninstall 2>&1)"
 echo "--- uninstall ---"; echo "$removed"

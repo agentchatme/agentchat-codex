@@ -167,7 +167,8 @@ describe('install places the four texts', () => {
     expect(fs.existsSync(configToml())).toBe(false)
     expect(fs.existsSync(path.join(home(), 'always-on.wanted'))).toBe(true)
     expect(fs.existsSync(path.join(home(), 'bin', 'agentchat-daemon.mjs'))).toBe(true)
-    expect(out.stdout).toContain('Ask Codex: "Set up your AgentChat account."')
+    // Not a checklist for a person: the setup verdict, last.
+    expect(out.stdout.trimEnd().split('\n').pop()).toMatch(/^Setup: no_account — /)
     expect(out.stdout).toContain(`✓ manual: bundled copy ${BUNDLED} → ${skill()} (no served version in hand to check it against)`)
     expect(snapshot(claudeDir())).toEqual(snapshot(claudeDir())) // sanity: helper is deterministic
   })
@@ -185,7 +186,8 @@ describe('install places the four texts', () => {
     expect(md).toBe(`${BLOCK('codex-agent')}\n`)
     expect(md).not.toContain('no account yet')
     expect(fs.readFileSync(skill(), 'utf-8')).toBe(MANUAL)
-    expect(out.stdout).toContain('Connected as @codex-agent')
+    expect(out.stdout).toMatch(/^Setup: /m)
+    expect(out.stdout).not.toContain('Connected as')
 
     // Re-running converges: no second block, no second line, exit 0.
     const again = await run([])
