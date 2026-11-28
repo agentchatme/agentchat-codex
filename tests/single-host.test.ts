@@ -425,6 +425,22 @@ describe('there is no way to address another agent', () => {
     expect(fs.existsSync(skill())).toBe(true)
   })
 
+  it('logout after uninstall places no setup offer: nothing says AgentChat is installed when it is not', async () => {
+    giveCodexAnIdentity()
+    expect((await run([])).code).toBe(0)
+    const uninstall = await run(['uninstall'])
+    expect(uninstall.code, uninstall.stdout + uninstall.stderr).toBe(0)
+    expect(fs.existsSync(skill())).toBe(false)
+
+    const out = await run(['logout'])
+    expect(out.code, out.stdout + out.stderr).toBe(0)
+    expect(fs.existsSync(creds())).toBe(false)
+    const md = fs.existsSync(agentsMd()) ? fs.readFileSync(agentsMd(), 'utf-8') : ''
+    expect(md).not.toContain('agentchat:start')
+    expect(md).not.toContain('no account yet')
+    expect(out.stdout).not.toContain('setup offer')
+  })
+
   it('uninstall leaves no daemon status behind: the status file, the one an older daemon wrote, and the could-not-process ledger', async () => {
     giveCodexAnIdentity()
     expect((await run([])).code).toBe(0)
