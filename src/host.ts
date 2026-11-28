@@ -1,6 +1,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   INTEGRATION_ENV,
   INTEGRATION_ENV_LEGACY,
@@ -10,6 +11,7 @@ import {
   MANUAL_SKILL_NAME,
   identityBlockState,
   serviceLabelFor,
+  installMethodOf,
   type AnchorLoadNote,
   type AnchorServedLine,
   type IntegrationClient,
@@ -150,13 +152,21 @@ export function resolveRunWorkdir(home: string, env: NodeJS.ProcessEnv = process
 
 export const LABEL = 'Codex'
 
+/** How this bundle was installed, when that is certain (`installMethodOf`). */
+const installMethodHere = installMethodOf(fileURLToPath(import.meta.url))
+
 /**
  * How this integration names itself to the server: the runtime as the texts
  * endpoint spells it (`GET /v1/texts?runtime=codex`) and this package's
  * version, sent as the client identity on every request and on the socket.
  * Nothing branches on it.
  */
-export const CLIENT: IntegrationClient = { runtime: 'codex', version: VERSION }
+export const CLIENT: IntegrationClient = {
+  runtime: 'codex',
+  version: VERSION,
+  // `npx` when this bundle runs from npm's exec cache; otherwise left out (never guessed).
+  ...(installMethodHere !== null ? { installMethod: installMethodHere } : {}),
+}
 
 /** The service label of the default config (`~/.codex`) — the label every install before per-home labels used. */
 export const SERVICE_BASE_LABEL = 'agentchatd-codex'

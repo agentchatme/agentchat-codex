@@ -78,7 +78,7 @@ for pass in first idempotent; do
   echo "$out" | grep -q "AgentChat integration for Codex $expected"
   echo "$out" | grep -q "✓ manual: "
   echo "$out" | grep -q "✓ service: integration daemon registered"
-  echo "$out" | grep -q 'Ask Codex: "Set up your AgentChat account."'
+  echo "$out" | grep -q '^Setup: no_account — '
 done
 codex_dir="$root/npxlike/home/.codex"
 head -3 "$codex_dir/skills/agentchat/SKILL.md" | grep -q "^name: agentchat" || { echo "::error::the manual is not placed as the agentchat skill"; exit 1; }

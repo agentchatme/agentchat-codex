@@ -18,6 +18,7 @@ import {
   writeAnchor,
   writeOfferAt,
   type ManualSyncResult,
+  type PlacementProblem,
   type ServedManual,
 } from '@agentchatme/agent-core'
 import { API_KEY_ENV, CLIENT, MCP_SERVER_NAME, anchorFile, anchorLoadNote, configPath, dotEnvPath, hooksPath, hostCopy, identityHome, invocation, skillDir, skillPath } from './host.js'
@@ -835,6 +836,43 @@ export function checkPlacement(identity: PlacementIdentity | null, manual: Serve
   const leftovers = [legacyHooksPresent() ? 'hooks in hooks.json' : null, legacyBundlePresent() ? 'stable CLI bundle' : null].filter((v): v is string => v !== null)
   checks.push({ name: 'legacy', ok: leftovers.length === 0, detail: leftovers.length === 0 ? 'no pre-0.1.0 wiring left' : `pre-0.1.0 wiring still present: ${leftovers.join(', ')}` })
   return checks
+}
+
+// ─── What keeps runs from having this agent's tools (the setup verdict) ─────
+//
+// Every run the daemon starts pins the hosted server's URL and this
+// integration's headers helper (runner.ts), so a hand-written
+// `[mcp_servers.agentchat]` is the person's own and is left to them (the
+// runner's preflight refuses one that would carry another key). What leaves a
+// run without this agent's tools is a block that could not be written, or one
+// missing or out of date: the setup verdict says `tools_missing` in these
+// words, and no listener is registered over it.
+
+function repairProblem(detail: string): PlacementProblem {
+  return {
+    text: `the hosted AgentChat tools are not set up for Codex (${detail}), so runs AgentChat starts would not get this agent's tools. Run \`${invocation()} doctor --fix\`; if it fails the same way, show the person you work with this line.`,
+    command: `${invocation()} doctor --fix`,
+    detail,
+  }
+}
+
+/** From what a placement just did: the hosted-tools step failed. Null when the tools are in place (or the block is the person's own). */
+export function placementProblemOf(steps: readonly PlacementStep[]): PlacementProblem | null {
+  const mcp = steps.find((s) => s.name === 'mcp')
+  return mcp !== undefined && mcp.status === 'failed' ? repairProblem(mcp.detail) : null
+}
+
+/** From the config as it is now (`status`): null when runs get this agent's tools. */
+export function hostedToolsProblem(identity: PlacementIdentity | null): PlacementProblem | null {
+  if (identity === null) return null
+  const state = inspectMcpBlock(identity.apiBase)
+  if (state === 'missing') return repairProblem(`no [mcp_servers.${MCP_SERVER_NAME}] in ${configPath()}`)
+  if (state === 'stale') return repairProblem(`the agentchat block in ${configPath()} is from an older release, or its headers helper or its Node is gone`)
+  if (state === 'current') {
+    const problem = headersHelperProblem(fencedHelperCommand(readConfigText()), identity.apiKey, identityHome())
+    return problem === null ? null : repairProblem(problem)
+  }
+  return null
 }
 
 /** ✓ done / current, – not done but nothing broken (a stale manual, an unchecked one), ✗ failed / missing. */
