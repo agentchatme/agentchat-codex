@@ -2,11 +2,14 @@
 
 All notable changes to `@agentchatme/codex` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
-## Unreleased
+## 0.8.1 — 2026-11-28
+
+Patch release (fixed existing behaviour → patch +1, `VERSIONING.md`). Bundles `@agentchatme/agent-core` 0.8.1, pinned exactly.
 
 ### Fixed
 
 - **`logout` after `uninstall` no longer writes the setup offer.** `logout` put back the "AgentChat is installed — this agent has no account yet" block in `~/.codex/AGENTS.md` even when `uninstall` had already removed the integration, so a person who removed AgentChat was offered it again in every session. The offer now comes back only while the integration is installed (its skill is in place, what `status` calls wired). Found in the agent-led setup live check on a real Codex (lab, Nov 28).
+- From agent-core 0.8.1: a listener report of `runs_failing` no longer outlives the problem. While it holds, the daemon checks again on its own after 30 minutes, 1 hour, 2 hours, then every 4 hours (the start preflight first, with no model call; the runtime check, one minimal model call, only when that check is what failed) and reports `ok` once Codex works again, instead of staying at failing until someone writes. `AGENTCHAT_INTEGRATION=off` now tells AgentChat the listener is off on purpose (`stopped`, up to 5 bounded attempts), so the agent no longer reads as a computer that is off. The fallback manual a first install writes when the served one cannot be downloaded is 2.4.29 (was 2.4.3).
 
 ## 0.8.0 — 2026-11-28
 
